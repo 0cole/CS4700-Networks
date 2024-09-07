@@ -54,8 +54,10 @@ def receiveMessage(socket: socket.socket):
 def run():
     s = connect()
     words = createWordlist()
-    found = ['_'] * 5
-    wrong_pos = ['_'] * 5
+    final = [None, None, None, None, None]
+    alphabet = {chr(i) for i in range(ord('a'), ord('z') + 1)}
+    avail = [alphabet, alphabet, alphabet, alphabet, alphabet]
+    possible = [set(), set(), set(), set(), set()]
     exclude = set()
     flag = None
 
@@ -65,9 +67,11 @@ def run():
     msg = receiveMessage(s)
     id = msg['id']
 
-    while True:
-        word = words[0]
-        guess_msg = {'type': 'guess', 'id': id, 'word': word}
+    found = False
+    guess_word = words[0]
+    while not found:
+
+        guess_msg = {'type': 'guess', 'id': id, 'word': guess_word}
         sendMessage(s, guess_msg)
         msg = receiveMessage(s)
 
@@ -81,34 +85,31 @@ def run():
             # Guessed incorrectly
             marks = msg['guesses'][-1]['marks']
             for i in range(5):
-                letter = word[i]
+                letter = guess_word[i]
                 if marks[i] == 0:
-                    if letter not in found:
-                        exclude.add(letter)
-                elif marks[i]  == 1:
-                    wrong_pos[i] = letter
-                elif marks[i]  == 2:
-                    if letter in wrong_pos:
-                        idx = wrong_pos.index(letter)
-                        wrong_pos[idx] = '_'
-                    found[i] = letter
+                    exclude.add(letter)
+                    for avail_set in avail:
+                        avail_set.discard(letter)
+                elif marks[i] == 1:
+                   for j in range(5):
+                        if i != j and not final[j] and letter not in exclude:
+                            possible[j].add(letter)
+                elif marks[i] == 2:
+                    final[i] = letter
+                    exclude.discard(letter)
+                    possible[i] = {letter}
 
-        filtered_words = []
-        for potential_word in words:
-            if any(potential_word[i] != found[i] for i in range(5) if found[i] != '_'):
+        for word in words:
+            if any(word[i] in exclude for i in range(5)):
                 continue
-            if any(potential_word[i] == wrong_pos[i] for i in range(5) if wrong_pos[i] != '_'):
+            if any(final[i] and final[i] != word[i] for i in range(5)):
                 continue
-            if any(letter not in potential_word for letter in wrong_pos if letter != '_'):
-                continue
-            if any(letter in potential_word for letter in exclude):
-                continue
-            filtered_words.append(potential_word)
-
-        words = filtered_words
+            # if any(possible[i] and word[i] not in possible[i] for i in range(5)):
+            #     continue
+            guess_word = word
+            break
 
     s.close()
 
 if __name__ == '__main__':
-
     run()
