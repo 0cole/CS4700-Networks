@@ -2,10 +2,6 @@
 import socket
 import json
 
-SERVER_HOST = 'proj1.4700.network'
-SERVER_PORT = 27993
-USER_NAME = 'harvey.c'
-
 def createWordlist():
     word_list = []
     file = open('wordlist.txt', 'r')
@@ -16,10 +12,10 @@ def createWordlist():
 
     return word_list
 
-def connect():
+def connect(host, port):
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        client.connect((SERVER_HOST, SERVER_PORT))
+        client.connect((host, port))
     except socket.error as e:
         print(f'ERROR: {e}')
         return
@@ -51,15 +47,14 @@ def receiveMessage(socket: socket.socket):
     print('Something went wrong parsing the json')
     return None
     
-def run():
-    s = connect()
+def run(s, user):
     words = createWordlist()
     found = ['_'] * 5
     wrong_pos = ['_'] * 5
     exclude = set()
     flag = None
 
-    init_msg = {'type': 'hello', 'northeastern_username': USER_NAME}
+    init_msg = {'type': 'hello', 'northeastern_username': user}
     sendMessage(s, init_msg)
 
     msg = receiveMessage(s)
@@ -107,8 +102,14 @@ def run():
 
         words = filtered_words
 
+def main():
+    host = 'proj1.4700.network'
+    port = 27993
+    user = 'harvey.c'
+
+    s = connect(host, port)
+    run(s, user)
     s.close()
 
 if __name__ == '__main__':
-
-    run()
+    main()
