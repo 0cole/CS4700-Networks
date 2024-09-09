@@ -28,6 +28,10 @@ def sendMessage(socket, message):
     socket.sendall(msg_str.encode('ascii'))
 
 def receiveMessage(socket: socket.socket):
+    """
+    Retrieves the message in increments of 4096 bytes and stores it in a
+    string buffer. Once there is no more text to read, convert buffer to json.
+    """
     buf = ''
     while True:
         try:
@@ -42,7 +46,7 @@ def receiveMessage(socket: socket.socket):
             except json.JSONDecodeError as e:
                 continue
             
-        except socket.error as e:
+        except Exception as e:
             print(f'Socket error: {e}')
             break
 
@@ -50,59 +54,45 @@ def receiveMessage(socket: socket.socket):
     return None
     
 def run(s, user):
-    words = createWordlist()
-    found = ['_'] * 5
-    wrong_pos = ['_'] * 5
-    exclude = set()
-    flag = None
-
+    # Send initial hello message to retrieve id
     init_msg = {'type': 'hello', 'northeastern_username': user}
     sendMessage(s, init_msg)
-
     msg = receiveMessage(s)
     id = msg['id']
 
-    while True:
-        word = words[0]
-        guess_msg = {'type': 'guess', 'id': id, 'word': word}
+    words = createWordlist()
+
+    while words:
+        guess = words.pop(0)
+        guess_msg = {'type': 'guess', 'id': id, 'word': guess}
         sendMessage(s, guess_msg)
         msg = receiveMessage(s)
 
         if msg['type'] == 'bye':
-            # Guessed correctly
-            flag = msg['flag']
-            print(flag)
-            found = True
+            # Correct guess
+            print(msg['flag'])
             break
         elif msg['type'] == 'retry':
-            # Guessed incorrectly
+            # Incorrect guess, filter out rest of words
             marks = msg['guesses'][-1]['marks']
-            for i in range(5):
-                letter = word[i]
-                if marks[i] == 0:
-                    if letter not in found:
-                        exclude.add(letter)
-                elif marks[i]  == 1:
-                    wrong_pos[i] = letter
-                elif marks[i]  == 2:
-                    if letter in wrong_pos:
-                        idx = wrong_pos.index(letter)
-                        wrong_pos[idx] = '_'
-                    found[i] = letter
+            filtered_words = []
 
-        filtered_words = []
-        for potential_word in words:
-            if any(potential_word[i] != found[i] for i in range(5) if found[i] != '_'):
-                continue
-            if any(potential_word[i] == wrong_pos[i] for i in range(5) if wrong_pos[i] != '_'):
-                continue
-            if any(letter not in potential_word for letter in wrong_pos if letter != '_'):
-                continue
-            if any(letter in potential_word for letter in exclude):
-                continue
-            filtered_words.append(potential_word)
-
-        words = filtered_words
+            for word in words:
+                valid = True
+                for i, letter in enumerate(guess):
+                    if marks[i] == 2 and word[i] != letter:
+                        valid = False
+                        break
+                    elif marks[i] == 1 and (word[i] == letter or letter not in word):
+                        valid = False
+                        break
+                    elif marks[i] == 0 and letter in word[i]:
+                        valid = False
+                        break
+                if valid:
+                    filtered_words.append(word)
+            
+            words = filtered_words
 
 def main():
     parser = argparse.ArgumentParser()
