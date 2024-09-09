@@ -1,7 +1,6 @@
 #!/usr/bin/python3
 import socket
 import json
-import sys
 import argparse
 
 def createWordlist():
@@ -97,16 +96,17 @@ def run(s, user):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-p', default=27993, type=int)
-    # parser.add_argument('-s')
-    # parser.add_argument('hostname')
-    # parser.add_argument('username')
+    parser.add_argument('-s', type=int)
+    parser.add_argument('hostname')
+    parser.add_argument('username')
     args = parser.parse_args()
     
     if args.p:
         port = args.p
-
-    host = 'proj1.4700.network'
-    user = 'harvey.c'
+    if args.s:
+        port = 27994
+    host = args.hostname
+    user = args.username
 
     s = connect(host, port)
     run(s, user)
