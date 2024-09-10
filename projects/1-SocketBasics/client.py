@@ -2,6 +2,7 @@
 import socket
 import json
 import argparse
+import ssl
 
 def createWordlist():
     word_list = []
@@ -101,10 +102,10 @@ def main():
     parser.add_argument('username')
     args = parser.parse_args()
     
-    if args.p:
-        port = args.p
     if args.s:
         port = 27994
+    if args.p:
+        port = args.p
     host = args.hostname
     user = args.username
 
