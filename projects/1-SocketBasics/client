@@ -1,10 +1,14 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 import socket
 import json
 import argparse
 import ssl
 
 def createWordlist():
+    """
+    Parse the wordlist.txt that is located in the same directory as the 
+    script and populate a list with the wordlist's contents.
+    """
     word_list = []
     file = open('wordlist.txt', 'r')
     line = file.readline()
@@ -15,23 +19,32 @@ def createWordlist():
     return word_list
 
 def connect(host, port, secure):
-    if secure:
-        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        unsecure_client = socket.create_connection((host, port))
-        sclient = context.wrap_socket(unsecure_client, server_hostname=host)
-        return sclient
-    else:
-        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            client.connect((host, port))
-        except socket.error as e:
-            print(f'ERROR: {e}')
-            return
+    """
+    Create a connection to the 'host' server socket. If secure == True,
+    wrap the connection using ssl. Catch any errors that may occur
+    during the connection.
+    """
+    try:
+        # init socket
+        client = socket.create_connection((host, port))
+
+        # Wrap connection if secure == True
+        if secure:
+            context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            client = context.wrap_socket(client, server_hostname=host)
+
         return client
+    
+    except (socket.error, ssl.SSLError) as e:
+        print(f'ERROR: {e}')
+        return None
 
 def sendMessage(socket, message):
+    """
+    Convert json obj into a string so it can be sent to the server socket
+    """
     msg_str = json.dumps(message) + '\n'
     socket.sendall(msg_str.encode('ascii'))
 
@@ -62,7 +75,12 @@ def receiveMessage(socket: socket.socket):
     return None
     
 def run(s, user):
-    # Send initial hello message to retrieve id
+    """
+    Commmunicate with the server socket. Send an initialization message to
+    retrieve the id, then begin guessing and filter the remaining words 
+    based on the feedbakc. Once the word is guessed correctly, print the flag
+    that is sent inside of the correctly guessed message and return.
+    """
     init_msg = {'type': 'hello', 'northeastern_username': user}
     sendMessage(s, init_msg)
     msg = receiveMessage(s)
@@ -79,7 +97,7 @@ def run(s, user):
         if msg['type'] == 'bye':
             # Correct guess
             print(msg['flag'])
-            break
+            return
         elif msg['type'] == 'retry':
             # Incorrect guess, filter out rest of words
             marks = msg['guesses'][-1]['marks']
@@ -103,6 +121,11 @@ def run(s, user):
             words = filtered_words
 
 def main():
+    """
+    Parse args and determine the variables this script will use. Initialize
+    the socket, and then begin communicating with it. Once the word has been
+    guessed, terminate the socket connection and finish running the script.
+    """
     secure = False
 
     parser = argparse.ArgumentParser()
@@ -117,11 +140,9 @@ def main():
         port = 27994
     if args.p:
         port = args.p
-    host = args.hostname
-    user = args.username
 
-    socket = connect(host, port, secure)
-    run(socket, user)
+    socket = connect(args.hostname, port, secure)
+    run(socket, args.username)
     socket.close()
 
 if __name__ == '__main__':
