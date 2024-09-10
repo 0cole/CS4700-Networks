@@ -14,14 +14,22 @@ def createWordlist():
 
     return word_list
 
-def connect(host, port):
-    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        client.connect((host, port))
-    except socket.error as e:
-        print(f'ERROR: {e}')
-        return
-    return client
+def connect(host, port, secure):
+    if secure:
+        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        unsecure_client = socket.create_connection((host, port))
+        sclient = context.wrap_socket(unsecure_client, server_hostname=host)
+        return sclient
+    else:
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            client.connect((host, port))
+        except socket.error as e:
+            print(f'ERROR: {e}')
+            return
+        return client
 
 def sendMessage(socket, message):
     msg_str = json.dumps(message) + '\n'
@@ -95,23 +103,26 @@ def run(s, user):
             words = filtered_words
 
 def main():
+    secure = False
+
     parser = argparse.ArgumentParser()
     parser.add_argument('-p', default=27993, type=int)
-    parser.add_argument('-s', type=int)
+    parser.add_argument('-s', action='store_true')
     parser.add_argument('hostname')
     parser.add_argument('username')
     args = parser.parse_args()
     
     if args.s:
+        secure = True
         port = 27994
     if args.p:
         port = args.p
     host = args.hostname
     user = args.username
 
-    s = connect(host, port)
-    run(s, user)
-    s.close()
+    socket = connect(host, port, secure)
+    run(socket, user)
+    socket.close()
 
 if __name__ == '__main__':
     main()
