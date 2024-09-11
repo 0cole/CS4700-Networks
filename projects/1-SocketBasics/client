@@ -118,6 +118,7 @@ def run(s, user):
                 if valid:
                     filtered_words.append(word)
             
+            # Update existing word object with newly filtered word list
             words = filtered_words
 
 def main():
@@ -135,11 +136,12 @@ def main():
     parser.add_argument('username')
     args = parser.parse_args()
     
+    if args.p:
+        port = args.p
     if args.s:
         secure = True
         port = 27994
-    if args.p:
-        port = args.p
+    
 
     socket = connect(args.hostname, port, secure)
     run(socket, args.username)
