@@ -48,18 +48,22 @@ def sendMessage(s, command, param1 = None, param2 = None):
     if param1: msg += f' {param1}'
     if param2: msg += f' {param2}'
     msg += '\r\n'
-
     s.sendall(msg.encode('ascii'))
 
 def receiveMessage(s):
     message = s.recv(1024).decode('ascii')
     print(message)
 
-def login(s, user, password):
-    sendMessage(s, 'USER', user)
-    receiveMessage(s)
-    sendMessage(s, 'PASS', password)
-    receiveMessage(s)
+def login(socket, user = 'anonymous', password = None):
+    sendMessage(socket, 'USER', user)
+    receiveMessage(socket)
+    sendMessage(socket, 'PASS', password)
+    receiveMessage(socket)
+
+def close(socket):
+    sendMessage(socket, 'QUIT')
+    receiveMessage(socket)
+    socket.close()
 
 def main():
     host = "ftp.4700.network"
@@ -76,7 +80,7 @@ def main():
     # else:
     #     runCommand(cmd, args.path, args.dest_path)
 
-    socket.close()
+    close(socket)
 
     
 
