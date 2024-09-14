@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import socket
 
 SINGLE_PARAM_CMDS = ['ls', 'rm', 'rmdir', 'mkdir']
 TWO_PARAM_CMDS = ['cp', 'mv']
@@ -26,15 +27,45 @@ def parser():
 
     return args
 
+def connect(host, port = 21):
+    """
+    Create a connection to the 'host' server socket. By default,
+    the port is set to 21. Catch any errors that may occur
+    during the connection.
+    """
+    try:
+        # init socket
+        ftp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ftp_socket.connect((host, port))
+        return ftp_socket
+    
+    except (socket.error) as e:
+        print(f'ERROR: {e}')
+        return None
+    
+def sendMessage(s, command, param1 = None, param2 = None):
+    pass
+
+def login(s, user, password):
+    welcome_msg = s.recv(1024).decode('ascii')
+    print(welcome_msg)
+
 def main():
-    args = parser()
+    host = "ftp.4700.network"
+    user = "harvey.c"
+    password = "e04fa0d3c760d01e0b2afa425be52d2da53fd944f0df069d35c656a28ee05e7f"
 
-    cmd = args.cmd
+    socket = connect(host)
+    login(socket, user, password)
 
+    # args = parser()
+    # cmd = args.cmd
     # if cmd in SINGLE_PARAM_CMDS:
     #     runCommand(cmd, args.path)
     # else:
     #     runCommand(cmd, args.path, args.dest_path)
+
+    socket.close()
 
     
 
