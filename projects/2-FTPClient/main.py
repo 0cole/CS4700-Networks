@@ -44,11 +44,22 @@ def connect(host, port = 21):
         return None
     
 def sendMessage(s, command, param1 = None, param2 = None):
-    pass
+    msg = f'{command}'
+    if param1: msg += f' {param1}'
+    if param2: msg += f' {param2}'
+    msg += '\r\n'
+
+    s.sendall(msg.encode('ascii'))
+
+def receiveMessage(s):
+    message = s.recv(1024).decode('ascii')
+    print(message)
 
 def login(s, user, password):
-    welcome_msg = s.recv(1024).decode('ascii')
-    print(welcome_msg)
+    sendMessage(s, 'USER', user)
+    receiveMessage(s)
+    sendMessage(s, 'PASS', password)
+    receiveMessage(s)
 
 def main():
     host = "ftp.4700.network"
