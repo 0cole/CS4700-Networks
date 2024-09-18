@@ -6,8 +6,6 @@ SINGLE_PARAM_CMDS = ['ls', 'rm', 'rmdir', 'mkdir']
 TWO_PARAM_CMDS = ['cp', 'mv']
 
 def parser():
-    # Initialize the variables that potentially get used
-    cmd, path1, path2 = None, None, None
 
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest='cmd', required=True)
@@ -70,6 +68,14 @@ def close(socket):
     receiveMessage(socket)
     socket.close()
 
+def runCommand(socket, cmd, param1 = None, param2 = None):
+    if cmd == 'mkdir':
+        sendMessage(socket, 'MKD', param1)
+    elif cmd == 'rmdir':
+        sendMessage(socket, 'RMD', param1)
+    receiveMessage(socket)
+
+
 def main():
     host = "ftp.4700.network"
     user = "harvey.c"
@@ -78,12 +84,16 @@ def main():
     socket = connect(host)
     login(socket, user, password)
 
-    # args = parser()
-    # cmd = args.cmd
-    # if cmd in SINGLE_PARAM_CMDS:
-    #     runCommand(cmd, args.path)
-    # else:
-    #     runCommand(cmd, args.path, args.dest_path)
+    args = parser()
+    cmd = args.cmd
+
+    print(f'Command: {args.cmd} Path: {args.path}')
+
+
+    if cmd in SINGLE_PARAM_CMDS:
+        runCommand(socket, cmd, args.path)
+    else:
+        runCommand(socket, cmd, args.path, args.dest_path)
 
     close(socket)
 
