@@ -59,6 +59,11 @@ def login(socket, user = 'anonymous', password = None):
     receiveMessage(socket)
     sendMessage(socket, 'PASS', password)
     receiveMessage(socket)
+    sendMessage(socket, 'TYPE', 'I')
+    receiveMessage(socket)
+    sendMessage(socket, 'STRU', 'F')
+    receiveMessage(socket)
+    sendMessage(socket, 'MODE', 'S')
 
 def close(socket):
     sendMessage(socket, 'QUIT')
