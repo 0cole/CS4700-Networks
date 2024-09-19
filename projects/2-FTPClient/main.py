@@ -45,8 +45,16 @@ def connect(host, port = 21):
         print(f'ERROR: {e}')
         return None
 
-def connectPasv():
-    pass
+def connectPasv(socket):
+    recv_msg = sendMessage(socket, 'PASV')
+    # Grab the data from the pasv received message and store 
+    # it in an array delimited by ,
+    # Should look like [192,168,0,1,1,1]
+    pasv_addr = recv_msg.split('(')[1].split(')')[0].split(',')
+    pasv_ip = '.'.join(pasv_addr[:4])
+    pasv_port = (int(pasv_addr[4]) << 8) + int(pasv_addr[5])  # Convert to real port using bitshift
+    pasv_socket = connect(pasv_ip, pasv_port)
+    return pasv_socket
 
 def sendMessage(s, command, param1 = None, param2 = None):
     msg = f'{command}'
@@ -80,13 +88,7 @@ def runCommand(socket, cmd, param1 = None, param2 = None):
     elif cmd == 'rmdir':
         sendMessage(socket, 'RMD', param1)
     elif cmd == 'ls':
-        recv_msg = sendMessage(socket, 'PASV')
-        pasv_addr = recv_msg.split('(')[1].split(')')[0].split(',')
-        pasv_ip = pasv_addr[0]
-        for i in range(1,4):
-            pasv_ip += ('.' + pasv_addr[i])
-        pasv_port = (int(pasv_addr[4]) << 8) + int(pasv_addr[5])
-        pasv_socket = connect(pasv_ip, pasv_port)
+        pasv_socket = connectPasv(socket)
         sendMessage(socket, 'LIST', param1)
         dir_list = receiveMessage(pasv_socket)
         print(dir_list)
