@@ -5,6 +5,10 @@ import socket
 SINGLE_PARAM_CMDS = ['ls', 'rm', 'rmdir', 'mkdir']
 TWO_PARAM_CMDS = ['cp', 'mv']
 
+HOST = "ftp.4700.network"
+USER = "harvey.c"
+PASSWORD = "e04fa0d3c760d01e0b2afa425be52d2da53fd944f0df069d35c656a28ee05e7f"
+
 def parser():
 
     parser = argparse.ArgumentParser()
@@ -40,7 +44,10 @@ def connect(host, port = 21):
     except (socket.error) as e:
         print(f'ERROR: {e}')
         return None
-    
+
+def connectPasv():
+    pass
+
 def sendMessage(s, command, param1 = None, param2 = None):
     msg = f'{command}'
     if param1: msg += f' {param1}'
@@ -48,19 +55,18 @@ def sendMessage(s, command, param1 = None, param2 = None):
     msg += '\r\n'
     s.sendall(msg.encode('ascii'))
 
+    return receiveMessage(s)
+
 def receiveMessage(s):
     message = s.recv(1024).decode('ascii')
-    print(message)
+    # print(message)
+    return message
 
 def login(socket, user = 'anonymous', password = None):
     sendMessage(socket, 'USER', user)
-    receiveMessage(socket)
     sendMessage(socket, 'PASS', password)
-    receiveMessage(socket)
     sendMessage(socket, 'TYPE', 'I')
-    receiveMessage(socket)
     sendMessage(socket, 'STRU', 'F')
-    receiveMessage(socket)
     sendMessage(socket, 'MODE', 'S')
 
 def close(socket):
@@ -73,22 +79,29 @@ def runCommand(socket, cmd, param1 = None, param2 = None):
         sendMessage(socket, 'MKD', param1)
     elif cmd == 'rmdir':
         sendMessage(socket, 'RMD', param1)
-    receiveMessage(socket)
+    elif cmd == 'ls':
+        recv_msg = sendMessage(socket, 'PASV')
+        pasv_addr = recv_msg.split('(')[1].split(')')[0].split(',')
+        pasv_ip = pasv_addr[0]
+        for i in range(1,4):
+            pasv_ip += ('.' + pasv_addr[i])
+        pasv_port = (int(pasv_addr[4]) << 8) + int(pasv_addr[5])
+        pasv_socket = connect(pasv_ip, pasv_port)
+        sendMessage(socket, 'LIST', param1)
+        dir_list = receiveMessage(pasv_socket)
+        print(dir_list)
 
+    return
 
 def main():
-    host = "ftp.4700.network"
-    user = "harvey.c"
-    password = "e04fa0d3c760d01e0b2afa425be52d2da53fd944f0df069d35c656a28ee05e7f"
 
-    socket = connect(host)
-    login(socket, user, password)
+    socket = connect(HOST)
+    login(socket, USER, PASSWORD)
 
     args = parser()
     cmd = args.cmd
 
-    print(f'Command: {args.cmd} Path: {args.path}')
-
+    # print(f'Command: {args.cmd} Path: {args.path}')
 
     if cmd in SINGLE_PARAM_CMDS:
         runCommand(socket, cmd, args.path)
