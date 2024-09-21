@@ -6,8 +6,10 @@ SINGLE_PARAM_CMDS = ['ls', 'rm', 'rmdir', 'mkdir']
 TWO_PARAM_CMDS = ['cp', 'mv']
 
 HOST = "ftp.4700.network"
+PORT = 21
 USER = "harvey.c"
 PASSWORD = "e04fa0d3c760d01e0b2afa425be52d2da53fd944f0df069d35c656a28ee05e7f"
+SERVER_LOCATION = "ftp://harvey.c:e04fa0d3c760d01e0b2afa425be52d2da53fd944f0df069d35c656a28ee05e7f@ftp.4700.network:21"
 
 def parser():
 
@@ -84,20 +86,51 @@ def close(socket):
 
 def runCommand(socket, cmd, param1 = None, param2 = None):
     if cmd == 'mkdir':
-        sendMessage(socket, 'MKD', param1)
+        print(sendMessage(socket, 'MKD', param1))
     elif cmd == 'rmdir':
-        sendMessage(socket, 'RMD', param1)
+        print(sendMessage(socket, 'RMD', param1))
     elif cmd == 'ls':
+        ftp_path = param1.split(f'{HOST}:{PORT}/')[1]
         pasv_socket = connectPasv(socket)
-        sendMessage(socket, 'LIST', param1)
-        dir_list = receiveMessage(pasv_socket)
-        print(dir_list)
+        sendMessage(socket, 'LIST', ftp_path)
+        print(receiveMessage(pasv_socket))
+        close(pasv_socket)
+    elif cmd == 'rm':
+        print(sendMessage(socket, 'DELE', param1))
+    elif cmd == 'cp':
+        if param1.startswith('ftp'):
+            # cp from ftp server to local
+            local_file = param2
+            ftp_file = param1.split(f'{HOST}:{PORT}/')[1]
 
-    return
+            pasv_socket = connectPasv(socket)
+            sendMessage(socket, 'RETR', ftp_file)
+
+            with open(local_file, "wb") as f:
+                while True:
+                    data = pasv_socket.recv(1024)
+                    if not data:
+                        break
+                    f.write(data)
+            close(pasv_socket)
+            print(receiveMessage(socket))
+        else:
+            # cp from local to ftp server
+            local_file = param1
+            ftp_file = param2.split(f'{HOST}:{PORT}/')[1]
+
+            pasv_socket = connectPasv(socket)
+            sendMessage(socket, 'STOR', ftp_file)
+
+            with open(local_file, 'r') as file:
+                buffer = file.read()
+            pasv_socket.sendall(buffer.encode('ascii'))
+            close(pasv_socket)
+            print(receiveMessage(socket))
 
 def main():
 
-    socket = connect(HOST)
+    socket = connect(HOST, PORT)
     login(socket, USER, PASSWORD)
 
     args = parser()
