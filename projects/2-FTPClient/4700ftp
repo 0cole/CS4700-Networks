@@ -47,6 +47,18 @@ def connect(host, port = 21):
         print(f'ERROR: {e}')
         return None
 
+def login(socket, user = 'anonymous', password = None):
+    sendMessage(socket, 'USER', user)
+    sendMessage(socket, 'PASS', password)
+    sendMessage(socket, 'TYPE', 'I')
+    sendMessage(socket, 'STRU', 'F')
+    sendMessage(socket, 'MODE', 'S')
+
+def close(socket):
+    sendMessage(socket, 'QUIT')
+    receiveMessage(socket)
+    socket.close()
+  
 def connectPasv(socket):
     recv_msg = sendMessage(socket, 'PASV')
     # Grab the data from the pasv received message and store 
@@ -72,18 +84,6 @@ def receiveMessage(s):
     # print(message)
     return message
 
-def login(socket, user = 'anonymous', password = None):
-    sendMessage(socket, 'USER', user)
-    sendMessage(socket, 'PASS', password)
-    sendMessage(socket, 'TYPE', 'I')
-    sendMessage(socket, 'STRU', 'F')
-    sendMessage(socket, 'MODE', 'S')
-
-def close(socket):
-    sendMessage(socket, 'QUIT')
-    receiveMessage(socket)
-    socket.close()
-
 def runCommand(socket, cmd, param1 = None, param2 = None):
     if cmd == 'mkdir':
         print(sendMessage(socket, 'MKD', param1))
@@ -96,37 +96,33 @@ def runCommand(socket, cmd, param1 = None, param2 = None):
         print(receiveMessage(pasv_socket))
         close(pasv_socket)
     elif cmd == 'rm':
-        print(sendMessage(socket, 'DELE', param1))
+        ftp_file = param1.split(f'{HOST}:{PORT}/')[1]
+        print(sendMessage(socket, 'DELE', ftp_file))
     elif cmd == 'cp':
+        pasv_socket = connectPasv(socket)
+
         if param1.startswith('ftp'):
             # cp from ftp server to local
             local_file = param2
             ftp_file = param1.split(f'{HOST}:{PORT}/')[1]
-
-            pasv_socket = connectPasv(socket)
             sendMessage(socket, 'RETR', ftp_file)
-
             with open(local_file, "wb") as f:
                 while True:
                     data = pasv_socket.recv(1024)
                     if not data:
                         break
                     f.write(data)
-            close(pasv_socket)
-            print(receiveMessage(socket))
         else:
             # cp from local to ftp server
             local_file = param1
             ftp_file = param2.split(f'{HOST}:{PORT}/')[1]
-
-            pasv_socket = connectPasv(socket)
             sendMessage(socket, 'STOR', ftp_file)
-
             with open(local_file, 'r') as file:
                 buffer = file.read()
             pasv_socket.sendall(buffer.encode('ascii'))
-            close(pasv_socket)
-            print(receiveMessage(socket))
+
+        pasv_socket.close()
+        print(receiveMessage(socket))
 
 def main():
 
