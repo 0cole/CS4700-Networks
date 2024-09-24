@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
+from urllib.parse import urlparse
 import argparse
 import socket
 import os
 
 SINGLE_PARAM_CMDS = ['ls', 'rm', 'rmdir', 'mkdir']
 TWO_PARAM_CMDS = ['cp', 'mv']
-
-HOST = "ftp.4700.network"
-PORT = 21
-USER = "harvey.c"
-PASSWORD = "e04fa0d3c760d01e0b2afa425be52d2da53fd944f0df069d35c656a28ee05e7f"
-SERVER_LOCATION = "ftp://harvey.c:e04fa0d3c760d01e0b2afa425be52d2da53fd944f0df069d35c656a28ee05e7f@ftp.4700.network:21"
+# For my reference when testing in cli
+SERVER_LOCATION = "ftp://harvey.c:e04fa0d3c760d01e0b2afa425be52d2da53fd944f0df069d35c656a28ee05e7f@ftp.4700.network:21/test.txt"
 
 def parser():
 
@@ -32,7 +29,7 @@ def parser():
 
     return args
 
-def connect(host, port = 21):
+def connect(host, port):
     """
     Create a connection to the 'host' server socket. By default,
     the port is set to 21. Catch any errors that may occur
@@ -65,9 +62,12 @@ def connectPasv(socket):
     # Grab the data from the pasv received message and store 
     # it in an array delimited by ,
     # Should look like [192,168,0,1,1,1]
-    pasv_addr = recv_msg.split('(')[1].split(')')[0].split(',')
+    start = recv_msg.find('(')
+    end = recv_msg.find(')')
+
+    pasv_addr = recv_msg[start+1:end].split(',')
     pasv_ip = '.'.join(pasv_addr[:4])
-    pasv_port = (int(pasv_addr[4]) << 8) + int(pasv_addr[5])  # Convert to real port using bitshift
+    pasv_port = (int(pasv_addr[4]) << 8) + int(pasv_addr[5])
     pasv_socket = connect(pasv_ip, pasv_port)
     return pasv_socket
 
@@ -80,34 +80,32 @@ def sendMessage(s, command, param1 = None, param2 = None):
 
     return receiveMessage(s)
 
-def receiveMessage(s):
+def receiveMessage(s): 
     message = s.recv(1024).decode('ascii')
     # print(message)
     return message
 
-def runCommand(socket, cmd, param1 = None, param2 = None):
+def runCommand(socket, cmd, param1 = None, param2 = None, coming_from = ''):
     if cmd == 'mkdir':
         print(sendMessage(socket, 'MKD', param1))
     elif cmd == 'rmdir':
         print(sendMessage(socket, 'RMD', param1))
     elif cmd == 'ls':
-        ftp_path = param1.split(f'{HOST}:{PORT}/')[1]
         pasv_socket = connectPasv(socket)
-        sendMessage(socket, 'LIST', ftp_path)
+        sendMessage(socket, 'LIST', param1)
         print(receiveMessage(pasv_socket))
         close(pasv_socket)
     elif cmd == 'rm':
-        ftp_file = param1.split(f'{HOST}:{PORT}/')[1]
-        print(sendMessage(socket, 'DELE', ftp_file))
+        print(sendMessage(socket, 'DELE', param1))
     elif cmd == 'cp' or cmd == 'mv':
         pasv_socket = connectPasv(socket)
 
-        if param1.startswith('ftp'):
+        if coming_from == 'ftp':
             # mv/cp from ftp server to local
-            local_file = param2
-            ftp_file = param1.split(f'{HOST}:{PORT}/')[1]
-            sendMessage(socket, 'RETR', ftp_file)
-            with open(local_file, "wb") as f:
+            local_file = param1 if param2 == '.' else param2
+
+            sendMessage(socket, 'RETR', param1)
+            with open('./' + local_file, "wb") as f:
                 while True:
                     data = pasv_socket.recv(1024)
                     if not data:
@@ -117,16 +115,16 @@ def runCommand(socket, cmd, param1 = None, param2 = None):
             # delete file on ftp server if cmd is mv
             if cmd == 'mv':
                 # runCommand(socket, 'rm', param1)
-                print(sendMessage(socket, 'DELE', ftp_file))
+                print(sendMessage(socket, 'DELE', param1))
             
-        else:
+        elif coming_from == 'local':
             # mv/cp from local to ftp server
             local_file = param1
-            ftp_file = param2.split(f'{HOST}:{PORT}/')[1]
-            sendMessage(socket, 'STOR', ftp_file)
-            with open(local_file, 'r') as file:
+
+            sendMessage(socket, 'STOR', param2)
+            with open(local_file, 'rb') as file:
                 buffer = file.read()
-            pasv_socket.sendall(buffer.encode('ascii'))
+            pasv_socket.sendall(buffer)
             pasv_socket.close()
             # delete file in filesystem if cmd is move
             if cmd == 'mv':
@@ -135,22 +133,34 @@ def runCommand(socket, cmd, param1 = None, param2 = None):
 
 def main():
 
-    socket = connect(HOST, PORT)
-    login(socket, USER, PASSWORD)
+    host, port, user, password, ftp_path = None, None, None, None, None
 
     args = parser()
     cmd = args.cmd
 
-    # print(f'Command: {args.cmd} Path: {args.path}')
+    if args.path.startswith('ftp://'):
+        parsed_path = urlparse(args.path)
+    elif cmd in TWO_PARAM_CMDS and args.dest_path.startswith('ftp://'):
+        parsed_path = urlparse(args.dest_path)
+
+    host = parsed_path.hostname
+    if parsed_path.port: port = parsed_path.port 
+    if parsed_path.username: user = parsed_path.username
+    if parsed_path.password: password = parsed_path.password
+    if parsed_path.path: ftp_path = parsed_path.path
+
+
+    socket = connect(host, port if port else 21)
+    login(socket, user, password)
 
     if cmd in SINGLE_PARAM_CMDS:
-        runCommand(socket, cmd, args.path)
-    else:
-        runCommand(socket, cmd, args.path, args.dest_path)
+        runCommand(socket, cmd, ftp_path)
+    elif args.path.startswith('ftp://'):
+        runCommand(socket, cmd, ftp_path, args.dest_path, coming_from='ftp')
+    elif args.dest_path.startswith('ftp://'):
+        runCommand(socket, cmd, args.path, ftp_path, coming_from='local')
 
-    close(socket)
-
-    
+    close(socket)    
 
 if __name__ == "__main__":
     main()
