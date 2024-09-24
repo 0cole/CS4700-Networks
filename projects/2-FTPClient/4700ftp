@@ -10,7 +10,10 @@ TWO_PARAM_CMDS = ['cp', 'mv']
 SERVER_LOCATION = "ftp://harvey.c:e04fa0d3c760d01e0b2afa425be52d2da53fd944f0df069d35c656a28ee05e7f@ftp.4700.network:21/test.txt"
 
 def parser():
-
+    """
+    Configures the parser. Adds the 6 usable commands, and adds their arguments.
+    mv and cp require 2 paths, while ls, rm, rmdir, and mkdir only require 1.
+    """
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest='cmd', required=True)
 
@@ -46,6 +49,9 @@ def connect(host, port):
         return None
 
 def login(socket, user = 'anonymous', password = None):
+    """
+    Starts communication with the socket and the ftp server
+    """
     sendMessage(socket, 'HELLO')
     sendMessage(socket, 'USER', user)
     sendMessage(socket, 'PASS', password)
@@ -54,11 +60,18 @@ def login(socket, user = 'anonymous', password = None):
     sendMessage(socket, 'MODE', 'S')
 
 def close(socket):
+    """
+    Only should be called on the main socket, do not call on the data channel socket.
+    """
     sendMessage(socket, 'QUIT')
     receiveMessage(socket)
     socket.close()
   
 def connectPasv(socket):
+    """
+    Creates a new socket and connects it using the message received when the main 
+    socket sends PASV. 
+    """
     recv_msg = sendMessage(socket, 'PASV')
     # Grab the data from the pasv received message and store 
     # it in an array delimited by ,
@@ -73,6 +86,11 @@ def connectPasv(socket):
     return pasv_socket
 
 def sendMessage(s, command, param1 = None, param2 = None):
+    """
+    Constructs the message and encodes it in ascii to match the type the socket 
+    is set to. Every mesasge must end with the characters \r\n. Calls 
+    receiveMessage after message is sent.
+    """
     msg = f'{command}'
     if param1: msg += f' {param1}'
     if param2: msg += f' {param2}'
@@ -82,11 +100,17 @@ def sendMessage(s, command, param1 = None, param2 = None):
     return receiveMessage(s)
 
 def receiveMessage(s): 
+    """
+    Decode all messages in ascii, uncomment the print() line for debugging.
+    """
     message = s.recv(1024).decode('ascii')
     # print(message)
     return message
 
 def runCommand(socket, cmd, param1 = None, param2 = None, coming_from = ''):
+    """
+    Performs the 6 commands for the homework.
+    """
     if cmd == 'mkdir':
         print(sendMessage(socket, 'MKD', param1))
     elif cmd == 'rmdir':
@@ -133,9 +157,13 @@ def runCommand(socket, cmd, param1 = None, param2 = None, coming_from = ''):
             print(receiveMessage(socket))
 
 def main():
+    
+    user, password, port = None, None, None
+
     args = parser()
     cmd = args.cmd
 
+    # Locate ftp url and parse the important information.
     if args.path.startswith('ftp://'):
         parsed_path = urlparse(args.path)
     elif cmd in TWO_PARAM_CMDS and args.dest_path.startswith('ftp://'):
