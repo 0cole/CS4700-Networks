@@ -98,7 +98,7 @@ def runCommand(socket, cmd, param1 = None, param2 = None, coming_from = ''):
         close(pasv_socket)
     elif cmd == 'rm':
         print(sendMessage(socket, 'DELE', param1))
-    elif cmd == 'cp' or cmd == 'mv':
+    elif cmd in ['cp', 'mv']:
         pasv_socket = connectPasv(socket)
 
         if coming_from == 'ftp':
@@ -133,9 +133,6 @@ def runCommand(socket, cmd, param1 = None, param2 = None, coming_from = ''):
             print(receiveMessage(socket))
 
 def main():
-
-    host, port, user, password, ftp_path = None, None, None, None, None
-
     args = parser()
     cmd = args.cmd
 
