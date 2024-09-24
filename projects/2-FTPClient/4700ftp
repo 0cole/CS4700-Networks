@@ -46,6 +46,7 @@ def connect(host, port):
         return None
 
 def login(socket, user = 'anonymous', password = None):
+    sendMessage(socket, 'HELLO')
     sendMessage(socket, 'USER', user)
     sendMessage(socket, 'PASS', password)
     sendMessage(socket, 'TYPE', 'I')
