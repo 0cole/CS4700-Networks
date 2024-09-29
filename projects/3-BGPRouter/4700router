@@ -2,6 +2,16 @@
 
 import argparse, socket, time, json, select, struct, sys, math
 
+class ForwardingTableEntry:
+    def __init__(self, src, ASPath, network, netmask, localpref, origin, selfOrigin):
+        self.ASPath = ASPath
+        self.localpref = localpref
+        self.netmask = netmask
+        self.network = network
+        self.origin = origin
+        self.selfOrigin = selfOrigin
+        self.src = src
+
 class Router:
 
     relations = {}
@@ -11,6 +21,7 @@ class Router:
     def __init__(self, asn, connections):
         print("Router at AS %s starting up" % asn)
         self.asn = asn
+        self.forwarding_table = []
         for relationship in connections:
             port, neighbor, relation = relationship.split("-")
 
@@ -39,11 +50,43 @@ class Router:
                         srcif = sock
                         break
                 msg = k.decode('utf-8')
-
                 print("Received message '%s' from %s" % (msg, srcif))
+
+                try:
+                    parsed_msg = json.loads(msg)
+                    print(f'-----PARSED MESSAGE-----\n{parsed_msg}')
+                    self.handleMessage(socket, parsed_msg)
+                except json.JSONDecodeError as e:
+                    print(f'Error parsing the json: {e}')
         return
+    
+    def handleMessage(self, socket, message):
+        type = message['type']
+        if type == 'update':
+            self.handleUpdate(message)
+        elif type == 'dump':
+            self.handleDump(message)
+
+    def handleUpdate(self, message):
+        print(f'UPDATE-MSG: {message}')
+        src_ip = message['src']
+        entry = ForwardingTableEntry(ASPath=message['msg']['ASPath'],
+                                     localpref=message['msg']['localpref'],
+                                     netmask=message['msg']['netmask'],
+                                     network=message['msg']['network'],
+                                     origin=message['msg']['origin'],
+                                     selfOrigin=message['msg']['selfOrigin'],
+                                     src=src_ip)
+        self.forwarding_table.append(entry)
+
+        if src_ip in self.relations:
+            if self.relations[src_ip] == 'cust':
+                pass
+            elif self.relations[src_ip] == 'peer' or self.relations[src_ip] == 'prov':
+                pass
 
 if __name__ == "__main__":
+    print('test')
     parser = argparse.ArgumentParser(description='route packets')
     parser.add_argument('asn', type=int, help="AS number of this router")
     parser.add_argument('connections', metavar='connections', type=str, nargs='+', help="connections")
