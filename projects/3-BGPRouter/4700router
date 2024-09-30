@@ -68,25 +68,47 @@ class Router:
             self.handleDump(message)
 
     def handleUpdate(self, message):
-        print(f'UPDATE-MSG: {message}')
-        src_ip = message['src']
+        src = message['src']
         entry = ForwardingTableEntry(ASPath=message['msg']['ASPath'],
                                      localpref=message['msg']['localpref'],
                                      netmask=message['msg']['netmask'],
                                      network=message['msg']['network'],
                                      origin=message['msg']['origin'],
                                      selfOrigin=message['msg']['selfOrigin'],
-                                     src=src_ip)
+                                     src=src)
         self.forwarding_table.append(entry)
 
-        if src_ip in self.relations:
-            if self.relations[src_ip] == 'cust':
-                pass
-            elif self.relations[src_ip] == 'peer' or self.relations[src_ip] == 'prov':
-                pass
+        if src in self.relations:
+            # Chek if the src is a cust or peer/provider
+            from_cust = self.relations[src] == 'cust'
+            self.broadcastUpdate(message, from_cust)
+
+    def broadcastUpdate(self, message, from_cust):
+            for dest, rel in self.relations.items():
+                if dest == message['src'] or (rel != 'cust' and not from_cust):
+                    continue
+                self.sendUpdate(message, dest)
+
+    def sendUpdate(self, message, dst):
+        msg_data = message['msg']
+        ASPath = [self.asn] + msg_data['ASPath']
+
+        update = {
+            'src': self.our_addr(dst),
+            'dst': dst,
+            'type': 'update',
+            'msg': {
+                'network': msg_data['network'],
+                'netmask': msg_data['netmask'],
+                'ASPath': ASPath
+            }
+        }
+        self.send(dst, json.dumps(update))
+
+    def handleDump(self, message):
+        pass
 
 if __name__ == "__main__":
-    print('test')
     parser = argparse.ArgumentParser(description='route packets')
     parser.add_argument('asn', type=int, help="AS number of this router")
     parser.add_argument('connections', metavar='connections', type=str, nargs='+', help="connections")
