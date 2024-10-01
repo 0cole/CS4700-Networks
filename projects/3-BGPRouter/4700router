@@ -11,6 +11,18 @@ class ForwardingTableEntry:
         self.origin = origin
         self.selfOrigin = selfOrigin
         self.src = src
+    
+    def asDict(self):
+        table_entry = {
+            'ASPath': self.ASPath,
+            'localpref': self.localpref,
+            'netmask': self.netmask,
+            'network': self.network,
+            'origin': self.origin,
+            'selfOrigin': self.selfOrigin,
+            'peer': self.src
+        }
+        return table_entry
 
 class Router:
 
@@ -54,16 +66,20 @@ class Router:
 
                 try:
                     parsed_msg = json.loads(msg)
-                    print(f'-----PARSED MESSAGE-----\n{parsed_msg}')
-                    self.handleMessage(socket, parsed_msg)
+                    print(f'-----PARSED THE FOLLOWING MESSAGE-----\n{parsed_msg}')
+                    self.handleMessage(parsed_msg, socket)
                 except json.JSONDecodeError as e:
                     print(f'Error parsing the json: {e}')
         return
     
-    def handleMessage(self, socket, message):
+    def handleMessage(self, message, socket):
+        # TODO STORE ALL ANNOUNCEMENTS FOR RETRACABILITY
+
         type = message['type']
         if type == 'update':
             self.handleUpdate(message)
+        elif type == 'data':
+            self.handleData(message, socket)
         elif type == 'dump':
             self.handleDump(message)
 
@@ -105,8 +121,48 @@ class Router:
         }
         self.send(dst, json.dumps(update))
 
+    def handleData(self, message, socket):
+        data = {
+            'type': 'data',
+            'src': self.our_addr(message['dst']),
+            'dst': message['dst'],
+            'msg': message['msg']
+        }
+
+        # Populate neighbors if they are on the same network with consideration of subnetmask
+        neighbors = []
+        for table_entry in self.forwarding_table:
+            if self.applySubnetMask(message['dst'], table_entry.netmask) \
+                ==  self.applySubnetMask(table_entry.network, table_entry.netmask):
+                neighbors.append(table_entry)
+
+        for neighbor in neighbors:
+            self.send(neighbor.src, json.dumps(data))
+
+    def applySubnetMask(self, ip, subnet_mask):
+        ip_octet = [int(octet) for octet in ip.split('.')]
+        mask_octet = [int(octet) for octet in subnet_mask.split('.')]
+
+        # Mask with AND operation
+        network_octet = [ip_octet[i] & mask_octet[i] for i in range(0, 4)]
+
+        masked_str = '.'.join(str(i) for i in network_octet)
+        print(masked_str)
+        return masked_str
+
     def handleDump(self, message):
-        pass
+        dst = message['src']
+        dump = {
+            'src': self.our_addr(dst),
+            'dst': dst,
+            'type': 'table',
+            'msg': []
+        }
+
+        for table_entry in self.forwarding_table:
+            dump['msg'].append(table_entry.asDict())
+        
+        self.send(dst, json.dumps(dump))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='route packets')
