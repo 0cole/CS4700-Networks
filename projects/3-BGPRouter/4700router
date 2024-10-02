@@ -34,6 +34,8 @@ class Router:
         print("Router at AS %s starting up" % asn)
         self.asn = asn
         self.forwarding_table = []
+        self.announcements = []
+        self.announcement_counter = 0
         for relationship in connections:
             port, neighbor, relation = relationship.split("-")
 
@@ -66,11 +68,14 @@ class Router:
 
                 try:
                     parsed_msg = json.loads(msg)
-                    print(f'-----PARSED THE FOLLOWING MESSAGE-----\n{parsed_msg}')
+                    print(f'-----PARSED THE FOLLOWING MESSAGE: {parsed_msg['type']}-----\n{parsed_msg}')
                     self.handleMessage(parsed_msg, socket)
                 except json.JSONDecodeError as e:
                     print(f'Error parsing the json: {e}')
         return
+    
+    def storeAnnouncement(self, message):
+        self.announcements.append((self.announcement_counter, message))
     
     def handleMessage(self, message, socket):
         # TODO STORE ALL ANNOUNCEMENTS FOR RETRACABILITY
@@ -82,6 +87,12 @@ class Router:
             self.data(message, socket)
         elif type == 'dump':
             self.dump(message)
+        else:
+            print(f'Unknown message type')
+            return
+        
+        # Store the message in a tuple with a counter that indicates when the message was received
+        self.storeAnnouncement(message)
 
     def update(self, message):
         src = message['src']
@@ -100,9 +111,8 @@ class Router:
             self.broadcastUpdate(message, from_cust)
 
     def broadcastUpdate(self, message, from_cust):
-            for dest, rel in self.relations.items():
-                if dest == message['src'] or (rel != 'cust' and not from_cust):
-                    continue
+        for dest, rel in self.relations.items():
+            if dest != message['src'] and (rel == 'cust' or from_cust):
                 self.sendUpdate(message, dest)
 
     def sendUpdate(self, message, dst):
@@ -122,33 +132,33 @@ class Router:
         self.send(dst, json.dumps(update))
 
     def data(self, message, socket):
-        data = {
+        data_msg = {
             'type': 'data',
             'src': self.our_addr(message['dst']),
             'dst': message['dst'],
             'msg': message['msg']
         }
 
-        # Populate neighbors if they are on the same network with consideration of subnetmask
-        neighbors = []
-        for table_entry in self.forwarding_table:
-            if self.applySubnetMask(message['dst'], table_entry.netmask) \
-                ==  self.applySubnetMask(table_entry.network, table_entry.netmask):
-                neighbors.append(table_entry)
+        # get neighbors on the same network by iterating through 
+        # all entries in forwarding_table
+        neighbors = [entry for entry in self.forwarding_table
+                    if self.applySubnetMask(message['dst'], entry.netmask) == 
+                        self.applySubnetMask(entry.network, entry.netmask)]
 
+        # Send the data to all matching neighbors
         for neighbor in neighbors:
-            self.send(neighbor.src, json.dumps(data))
-
+            self.send(neighbor.src, json.dumps(data_msg))
+    
     def applySubnetMask(self, ip, subnet_mask):
-        ip_octet = [int(octet) for octet in ip.split('.')]
-        mask_octet = [int(octet) for octet in subnet_mask.split('.')]
-
-        # Mask with AND operation
-        network_octet = [ip_octet[i] & mask_octet[i] for i in range(0, 4)]
-
-        masked_str = '.'.join(str(i) for i in network_octet)
-        print(masked_str)
-        return masked_str
+        try:
+            ip_octets = map(int, ip.split('.'))
+            mask_octets = map(int, subnet_mask.split('.'))
+            # mask with AND operation
+            masked_ip = '.'.join(str(octet & mask) for octet, mask in zip(ip_octets, mask_octets))
+            return masked_ip
+        
+        except ValueError:
+            raise ValueError(f"Invalid IP or subnet mask: {ip}, {subnet_mask}")
 
     def dump(self, message):
         dst = message['src']
