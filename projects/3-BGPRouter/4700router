@@ -26,16 +26,15 @@ class ForwardingTableEntry:
 
 class Router:
 
-    relations = {}
-    sockets = {}
-    ports = {}
-
     def __init__(self, asn, connections):
         print("Router at AS %s starting up" % asn)
         self.asn = asn
+        self.relations = {}
+        self.sockets = {}
+        self.ports = {}
         self.forwarding_table = []
-        self.announcements = []
-        self.announcement_counter = 0
+        self.updates = []
+        self.update_counter = 0
         for relationship in connections:
             port, neighbor, relation = relationship.split("-")
 
@@ -74,62 +73,68 @@ class Router:
                     print(f'Error parsing the json: {e}')
         return
     
-    def storeAnnouncement(self, message):
-        self.announcements.append((self.announcement_counter, message))
-    
     def handleMessage(self, message, socket):
-        # TODO STORE ALL ANNOUNCEMENTS FOR RETRACABILITY
-
+        noerror = False
         type = message['type']
         if type == 'update':
-            self.update(message)
+            noerror = self.update(message)
         elif type == 'data':
-            self.data(message, socket)
+            noerror = self.data(message, socket)
         elif type == 'dump':
-            self.dump(message)
+            noerror = self.dump(message)
         else:
             print(f'Unknown message type')
             return
         
-        # Store the message in a tuple with a counter that indicates when the message was received
-        self.storeAnnouncement(message)
+        #Check if an error occurred when handling the packet
+        if not noerror:
+            pass
+        
+    def storeUpdate(self, message):
+        self.updates.append((self.update_counter, message))
+        self.update_counter += 1
 
     def update(self, message):
+        # Store the update in a tuple with a counter that indicates when the message was received
+        self.storeUpdate(message)
+
         src = message['src']
         entry = ForwardingTableEntry(ASPath=message['msg']['ASPath'],
-                                     localpref=message['msg']['localpref'],
-                                     netmask=message['msg']['netmask'],
-                                     network=message['msg']['network'],
-                                     origin=message['msg']['origin'],
-                                     selfOrigin=message['msg']['selfOrigin'],
-                                     src=src)
+                                    localpref=message['msg']['localpref'],
+                                    netmask=message['msg']['netmask'],
+                                    network=message['msg']['network'],
+                                    origin=message['msg']['origin'],
+                                    selfOrigin=message['msg']['selfOrigin'],
+                                    src=src)
         self.forwarding_table.append(entry)
 
         if src in self.relations:
-            # Chek if the src is a cust or peer/provider
+            # Check if the src is a customer or peer/provider
             from_cust = self.relations[src] == 'cust'
-            self.broadcastUpdate(message, from_cust)
 
-    def broadcastUpdate(self, message, from_cust):
-        for dest, rel in self.relations.items():
-            if dest != message['src'] and (rel == 'cust' or from_cust):
-                self.sendUpdate(message, dest)
+            # Broadcast update to  neighbors
+            for dest, rel in self.relations.items():
+                # Only send to neighbors that are not the original source and are either
+                # customers or peers/providers if the message came from a customer
+                if dest != src and (rel == 'cust' or from_cust):
+                    ASPath = [self.asn] + message['msg']['ASPath']
 
-    def sendUpdate(self, message, dst):
-        msg_data = message['msg']
-        ASPath = [self.asn] + msg_data['ASPath']
-
-        update = {
-            'src': self.our_addr(dst),
-            'dst': dst,
-            'type': 'update',
-            'msg': {
-                'network': msg_data['network'],
-                'netmask': msg_data['netmask'],
-                'ASPath': ASPath
-            }
-        }
-        self.send(dst, json.dumps(update))
+                    update_message = {
+                        'src': self.our_addr(dest),
+                        'dst': dest,
+                        'type': 'update',
+                        'msg': {
+                            'network': message['msg']['network'],
+                            'netmask': message['msg']['netmask'],
+                            'ASPath': ASPath
+                        }
+                    }
+                    try:
+                        self.send(dest, json.dumps(update_message))
+                    except:
+                        raise Exception(f'Unable to forward announcement to {dest}')
+                    
+        return True
 
     def data(self, message, socket):
         data_msg = {
@@ -139,15 +144,15 @@ class Router:
             'msg': message['msg']
         }
 
-        # get neighbors on the same network by iterating through 
-        # all entries in forwarding_table
-        neighbors = [entry for entry in self.forwarding_table
-                    if self.applySubnetMask(message['dst'], entry.netmask) == 
-                        self.applySubnetMask(entry.network, entry.netmask)]
-
-        # Send the data to all matching neighbors
-        for neighbor in neighbors:
-            self.send(neighbor.src, json.dumps(data_msg))
+        # send data to neighbors if they are in the same network
+        for entry in self.forwarding_table:
+            if self.applySubnetMask(message['dst'], entry.netmask) == \
+                self.applySubnetMask(entry.network, entry.netmask):
+                try:
+                    self.send(entry.src, json.dumps(data_msg))
+                except:
+                    raise Exception(f'Unable to send table to {entry.src}')
+        return True
     
     def applySubnetMask(self, ip, subnet_mask):
         try:
@@ -169,6 +174,7 @@ class Router:
             'msg': []
         }
 
+        # Dump each entry
         for table_entry in self.forwarding_table:
             dump['msg'].append(table_entry.asDict())
         
