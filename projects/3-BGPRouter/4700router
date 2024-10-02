@@ -77,13 +77,13 @@ class Router:
 
         type = message['type']
         if type == 'update':
-            self.handleUpdate(message)
+            self.update(message)
         elif type == 'data':
-            self.handleData(message, socket)
+            self.data(message, socket)
         elif type == 'dump':
-            self.handleDump(message)
+            self.dump(message)
 
-    def handleUpdate(self, message):
+    def update(self, message):
         src = message['src']
         entry = ForwardingTableEntry(ASPath=message['msg']['ASPath'],
                                      localpref=message['msg']['localpref'],
@@ -121,7 +121,7 @@ class Router:
         }
         self.send(dst, json.dumps(update))
 
-    def handleData(self, message, socket):
+    def data(self, message, socket):
         data = {
             'type': 'data',
             'src': self.our_addr(message['dst']),
@@ -150,7 +150,7 @@ class Router:
         print(masked_str)
         return masked_str
 
-    def handleDump(self, message):
+    def dump(self, message):
         dst = message['src']
         dump = {
             'src': self.our_addr(dst),
