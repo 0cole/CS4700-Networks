@@ -51,7 +51,7 @@ class Router:
                     print(f'Error parsing the json: {e}')
         return
     
-    def handlePacket(self, packet, socket):
+    def handlePacket(self, packet):
         noerror = False
         type = packet['type']
         if type == 'update':
