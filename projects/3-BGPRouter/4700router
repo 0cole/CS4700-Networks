@@ -2,28 +2,6 @@
 
 import argparse, socket, time, json, select, struct, sys, math
 
-class ForwardingTableEntry:
-    def __init__(self, src, ASPath, network, netmask, localpref, origin, selfOrigin):
-        self.ASPath = ASPath
-        self.localpref = localpref
-        self.netmask = netmask
-        self.network = network
-        self.origin = origin
-        self.selfOrigin = selfOrigin
-        self.src = src
-    
-    def asDict(self):
-        table_entry = {
-            'ASPath': self.ASPath,
-            'localpref': self.localpref,
-            'netmask': self.netmask,
-            'network': self.network,
-            'origin': self.origin,
-            'selfOrigin': self.selfOrigin,
-            'peer': self.src
-        }
-        return table_entry
-
 class Router:
 
     def __init__(self, asn, connections):
@@ -32,7 +10,7 @@ class Router:
         self.relations = {}
         self.sockets = {}
         self.ports = {}
-        self.forwarding_table = []
+        self.forwarding_table = {}
         self.updates = []
         self.update_counter = 0
         for relationship in connections:
@@ -68,7 +46,7 @@ class Router:
                 try:
                     parsed_msg = json.loads(msg)
                     print(f'-----PARSED THE FOLLOWING MESSAGE: {parsed_msg['type']}-----\n{parsed_msg}')
-                    self.handlePacket(parsed_msg, socket)
+                    self.handlePacket(parsed_msg)
                 except json.JSONDecodeError as e:
                     print(f'Error parsing the json: {e}')
         return
@@ -79,7 +57,7 @@ class Router:
         if type == 'update':
             noerror = self.update(packet)
         elif type == 'data':
-            noerror = self.data(packet, socket)
+            noerror = self.data(packet)
         elif type == 'dump':
             noerror = self.dump(packet)
         else:
@@ -95,63 +73,81 @@ class Router:
         self.update_counter += 1
 
     def update(self, packet):
+        """
+        1. Save this update for future reference
+        2. Create an entry in the forward table
+        3. For every neighbor, send the update announcement
+        """
         # Store the update in a tuple with a counter that indicates when the packet was received
         self.storeUpdate(packet)
 
-        src = packet['src']
-        entry = ForwardingTableEntry(ASPath=packet['msg']['ASPath'],
-                                    localpref=packet['msg']['localpref'],
-                                    netmask=packet['msg']['netmask'],
-                                    network=packet['msg']['network'],
-                                    origin=packet['msg']['origin'],
-                                    selfOrigin=packet['msg']['selfOrigin'],
-                                    src=src)
-        self.forwarding_table.append(entry)
+        peer = packet['src']
+        network = packet['msg']['network']
+        netmask = packet['msg']['netmask']
+        ASPath = packet['msg']['ASPath']
 
-        if src in self.relations:
-            # Check if the src is a customer or peer/provider
-            from_cust = self.relations[src] == 'cust'
+        # Save this in our forwarding table
+        neighbor_dict = {
+            'ASPath': ASPath,
+            'localpref': packet['msg']['localpref'],
+            'netmask': netmask,
+            'network': network,
+            'origin': packet['msg']['origin'],
+            'selfOrigin': packet['msg']['selfOrigin'],
+            'peer': peer
+        }
 
-            # Broadcast update to  neighbors
-            for dest, rel in self.relations.items():
-                # Only send to neighbors that are not the original source and are either
-                # customers or peers/providers if the packet came from a customer
-                if dest != src and (rel == 'cust' or from_cust):
-                    ASPath = [self.asn] + packet['msg']['ASPath']
+        self.forwarding_table[(network, netmask)] = neighbor_dict
+        ASPath = [self.asn] + ASPath
 
+        # Send to every neighbor in self.relations
+        if peer in self.relations:
+            for dst, rel in self.relations.items():
+                if not peer == dst:
                     update_packet = {
-                        'src': self.our_addr(dest),
-                        'dst': dest,
+                        'src': self.our_addr(dst),
+                        'dst': dst,
                         'type': 'update',
                         'msg': {
-                            'network': packet['msg']['network'],
-                            'netmask': packet['msg']['netmask'],
+                            'network': network,
+                            'netmask': netmask,
                             'ASPath': ASPath
                         }
                     }
                     try:
-                        self.send(dest, json.dumps(update_packet))
-                    except:
-                        raise Exception(f'Unable to forward announcement to {dest}')
-                    
+                        self.send(dst, json.dumps(update_packet))
+                    except Exception as e:
+                        print(f"ERROR WHEN UPDATING: {e}")
+                        return
         return True
 
-    def data(self, packet, socket):
+    def data(self, packet):
+        """
+        1. Create message to send
+        2. Find if the neighbor is valid
+            a. Compare if the peer matches one of the subnet masked ips
+            b. send if there is a match
+        """
+        peer = packet['dst']
+        src = self.our_addr(peer)
+        
+        # Create data message to send
         data_msg = {
             'type': 'data',
-            'src': self.our_addr(packet['dst']),
-            'dst': packet['dst'],
+            'src': src,
+            'dst': peer,
             'msg': packet['msg']
         }
 
-        # send data to neighbors if they are in the same network
-        for entry in self.forwarding_table:
-            if self.applySubnetMask(packet['dst'], entry.netmask) == \
-                self.applySubnetMask(entry.network, entry.netmask):
+        # find neighbor to send data to by comparing networks with netmasks
+        for network_arr, neighbor in self.forwarding_table.items():
+            if self.applySubnetMask(peer, network_arr[1]) == \
+                self.applySubnetMask(network_arr[0], network_arr[1]):
                 try:
-                    self.send(entry.src, json.dumps(data_msg))
-                except:
-                    raise Exception(f'Unable to send table to {entry.src}')
+                    self.send(neighbor['peer'], json.dumps(data_msg))
+                except Exception as e:
+                        print(f"ERROR WHEN SENDING DATA: {e}")
+                        return
         return True
     
     def applySubnetMask(self, ip, subnet_mask):
@@ -166,19 +162,40 @@ class Router:
             raise ValueError(f"Invalid IP or subnet mask: {ip}, {subnet_mask}")
 
     def dump(self, packet):
-        dst = packet['src']
+        """
+        1. Create dump dict
+            a. put every entry in the forwarding table into dump['msg']
+        2. Send dump dict to peer
+        """
+        peer = packet['src']
+        src = self.our_addr(peer)
         dump = {
-            'src': self.our_addr(dst),
-            'dst': dst,
+            'src': src,
+            'dst': peer,
             'type': 'table',
             'msg': []
         }
 
-        # Dump each entry
-        for table_entry in self.forwarding_table:
-            dump['msg'].append(table_entry.asDict())
+        # Add each entry into the dump dict
+        for network_arr, neighbor_dict in self.forwarding_table.items():
+            src_dict = {
+                'ASPath': neighbor_dict['ASPath'],
+                'localpref': neighbor_dict['localpref'],
+                'origin': neighbor_dict['origin'],
+                'selfOrigin': neighbor_dict['selfOrigin'],
+                'network': network_arr[0],
+                'netmask': network_arr[1],
+                'peer': neighbor_dict['peer'],
+            }
+            dump['msg'].append(src_dict)
         
-        self.send(dst, json.dumps(dump))
+        try:
+            self.send(peer, json.dumps(dump))
+        except Exception as e:
+            print(f"ERROR WHEN DUMPING: {e}")
+            return
+
+        return True
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='route packets')
