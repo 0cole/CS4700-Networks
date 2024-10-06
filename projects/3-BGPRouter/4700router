@@ -31,6 +31,15 @@ class Router:
     def send(self, network, message):
         self.sockets[network].sendto(message.encode('utf-8'), ('localhost', self.ports[network]))
 
+    def sendNoRoute(self, ip):
+        msg = {
+            'src': self.our_addr(ip),
+            'dst': ip,
+            'type': 'no route',
+            'msg': {}
+        }
+        self.send(ip, json.dumps(msg))
+
     def run(self):
         while True:
             socks = select.select(self.sockets.values(), [], [], 0.1)[0]
@@ -51,83 +60,11 @@ class Router:
                 except json.JSONDecodeError as e:
                     print(f'Error parsing the json: {e}')
         return
-    
-    def handlePacket(self, packet):
-        noerror = False
-        type = packet['type']
-        if type == 'update':
-            noerror = self.update(packet)
-        elif type == 'data':
-            noerror = self.data(packet)
-        elif type == 'dump':
-            noerror = self.dump(packet)
-        else:
-            print(f'Unknown packet type')
-            return
-        
-        #Check if an error occurred when handling the packet
-        if not noerror:
-            pass
         
     def storeUpdate(self, packet):
         self.updates.append((self.update_counter, packet))
         self.update_counter += 1
 
-    def update(self, packet):
-        """
-        1. Save this update for future reference
-        2. Create an entry in the forward table
-        3. For every neighbor, send the update announcement
-        """
-        # Store the update in a tuple with a counter that indicates when the packet was received
-        self.storeUpdate(packet)
-
-        peer = packet['src']
-        network = packet['msg']['network']
-        netmask = packet['msg']['netmask']
-        localpref = packet['msg']['localpref']
-        selfOrigin = packet['msg']['selfOrigin']
-        ASPath = packet['msg']['ASPath']
-        origin = packet['msg']['origin']
-
-        # Save this in our forwarding table
-        neighbor_dict = {
-            'netmask': netmask,
-            'network': network,
-            'localpref': localpref,
-            'selfOrigin': selfOrigin,
-            'ASPath': ASPath,
-            'origin': origin,
-            'peer': peer
-        }
-
-        if (network, netmask) not in self.forwarding_table:
-            self.forwarding_table[(network, netmask)] = []
-        self.forwarding_table[(network, netmask)].append(neighbor_dict)
-
-        ASPath = [self.asn] + ASPath
-
-        # Send to every neighbor in self.relations
-        if peer in self.relations:
-            for dst, rel in self.relations.items():
-                if not peer == dst:
-                    update_packet = {
-                        'src': self.our_addr(dst),
-                        'dst': dst,
-                        'type': 'update',
-                        'msg': {
-                            'network': network,
-                            'netmask': netmask,
-                            'ASPath': ASPath
-                        }
-                    }
-                    try:
-                        self.send(dst, json.dumps(update_packet))
-                    except Exception as e:
-                        print(f"ERROR WHEN UPDATING: {e}")
-                        return
-        return True
-    
     def filterBySubnet(self, all_routes):
         possible_routes = []
         max_subnet = 0
@@ -209,10 +146,10 @@ class Router:
                 possible_ip = [route]
         return possible_ip
 
-
-
     def determineRoute(self, ip):
         """
+        Generate all possible routes then filter in the follwing order
+        until only 1 route remains.
         1. whichever route has the highest subnet mask
         2. highest localpref
         3. selfOrigin = True
@@ -247,40 +184,10 @@ class Router:
             if len(routes) > 1:
                 routes = self.filterByLowestSrc(routes)
 
-        opt_route = routes[0]
-        print(f'----FOUND OPTIMAL ROUTE: {opt_route}')
-        return opt_route['peer']
-
-    def data(self, packet):
-        """
-        1. Create message to send
-        2. Find if the neighbor is valid
-            a. Compare if the peer matches one of the subnet masked ips
-            b. send if there is a match
-        """
-        peer = packet['dst']
-
-        opt_peer = self.determineRoute(peer)
-
-        print(f'----OPTIMAL PEER FOR {peer}: {opt_peer}')
-
-        try:
-            self.send(opt_peer, json.dumps(packet))
-        except Exception as e:
-            print(f"ERROR WHEN SENDING DATA: {e}")
-            return
-
-        # # find neighbor to send data to by comparing networks with netmasks
-        # for network_arr, neighbors in self.forwarding_table.items():
-        #     for neighbor in neighbors:
-        #         if self.applySubnetMask(peer, network_arr[1]) == \
-        #             self.applySubnetMask(network_arr[0], network_arr[1]):
-        #             try:
-        #                 self.send(neighbor['peer'], json.dumps(packet))
-        #             except Exception as e:
-        #                     print(f"ERROR WHEN SENDING DATA: {e}")
-        #                     return
-        return True
+            opt_route = routes[0]
+            print(f'----FOUND OPTIMAL ROUTE: {opt_route}')
+            return opt_route['peer']
+        return None # If there are no valid routes
     
     def applySubnetMask(self, ip, subnet_mask):
         try:
@@ -293,6 +200,84 @@ class Router:
         except ValueError:
             raise ValueError(f"Invalid IP or subnet mask: {ip}, {subnet_mask}")
 
+    def update(self, packet):
+        """
+        1. Save this update for future reference
+        2. Create an entry in the forward table
+        3. For every neighbor, send the update announcement
+        """
+        # Store the update in a tuple with a counter that indicates when the packet was received
+        self.storeUpdate(packet)
+
+        peer = packet['src']
+        network = packet['msg']['network']
+        netmask = packet['msg']['netmask']
+        localpref = packet['msg']['localpref']
+        selfOrigin = packet['msg']['selfOrigin']
+        ASPath = packet['msg']['ASPath']
+        origin = packet['msg']['origin']
+
+        # Save this in our forwarding table
+        neighbor_dict = {
+            'netmask': netmask,
+            'network': network,
+            'localpref': localpref,
+            'selfOrigin': selfOrigin,
+            'ASPath': ASPath,
+            'origin': origin,
+            'peer': peer
+        }
+
+        if (network, netmask) not in self.forwarding_table:
+            self.forwarding_table[(network, netmask)] = []
+        self.forwarding_table[(network, netmask)].append(neighbor_dict)
+
+        ASPath = [self.asn] + ASPath
+
+        # Send to every neighbor in self.relations
+        if peer in self.relations:
+            for dst, rel in self.relations.items():
+                if not peer == dst:
+                    update_packet = {
+                        'src': self.our_addr(dst),
+                        'dst': dst,
+                        'type': 'update',
+                        'msg': {
+                            'network': network,
+                            'netmask': netmask,
+                            'ASPath': ASPath
+                        }
+                    }
+                    try:
+                        self.send(dst, json.dumps(update_packet))
+                    except Exception as e:
+                        print(f"ERROR WHEN UPDATING: {e}")
+                        return
+        return True
+    
+    def data(self, packet):
+        """
+        1. Create message to send
+        2. Find if the neighbor is valid
+            a. Compare if the peer matches one of the subnet masked ips
+            b. send if there is a match
+        """
+        peer = packet['dst']
+        opt_peer = self.determineRoute(peer)
+
+        # If there are no valid routes to peer
+        if opt_peer == None:
+            self.sendNoRoute(peer)
+
+        print(f'----OPTIMAL PEER FOR {peer}: {opt_peer}')
+
+        try:
+            self.send(opt_peer, json.dumps(packet))
+        except Exception as e:
+            print(f"ERROR WHEN SENDING DATA: {e}")
+            return
+        return True
+    
     def dump(self, packet):
         """
         1. Create dump dict
@@ -329,6 +314,23 @@ class Router:
             return
 
         return True
+
+    def handlePacket(self, packet):
+        noerror = False
+        type = packet['type']
+        if type == 'update':
+            noerror = self.update(packet)
+        elif type == 'data':
+            noerror = self.data(packet)
+        elif type == 'dump':
+            noerror = self.dump(packet)
+        else:
+            print(f'Unknown packet type')
+            return
+        
+        #Check if an error occurred when handling the packet
+        if not noerror:
+            pass
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='route packets')
