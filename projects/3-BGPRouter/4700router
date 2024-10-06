@@ -29,6 +29,7 @@ class Router:
         return "%d.%d.%d.%d" % (quads[0], quads[1], quads[2], quads[3])
 
     def send(self, network, message):
+        print(f'----SENDING TO {network}: {message}')
         self.sockets[network].sendto(message.encode('utf-8'), ('localhost', self.ports[network]))
 
     def sendNoRoute(self, ip):
@@ -92,6 +93,7 @@ class Router:
             if localpref == max_localpref:
                 possible_routes.append(route)
             elif localpref > max_localpref:
+                max_localpref = localpref
                 possible_routes = [route]
         return possible_routes
 
@@ -101,6 +103,11 @@ class Router:
         for route in all_routes:
             if route.get('selfOrigin') == True:
                 possible_routes.append(route)
+
+        # When there are no selfOrigin = True routes, just add all
+        # and go to next step
+        if len(possible_routes) == 0:
+            possible_routes = all_routes
         return possible_routes
 
     def filterByASPath(self, all_routes):
@@ -138,7 +145,7 @@ class Router:
         lowest_ip = float('inf')
 
         for route in all_routes:
-            src = route.get('src')
+            src = route.get('peer')
             octets = map(int, src.split('.'))
             curr_ip = (next(octets) << 24) + (next(octets) << 16) + (next(octets) << 8) + next(octets)
 
@@ -173,16 +180,22 @@ class Router:
         if routes:
             if len(routes) > 1:
                 routes = self.filterBySubnet(routes)
+                print(f'after comparing subnets: {routes}')
             if len(routes) > 1:
                 routes = self.filterByLocalpref(routes)
+                print(f'after comparing localpref: {routes}')
             if len(routes) > 1:
                 routes = self.filterBySelfOrigin(routes)
+                print(f'after comparing selforigin: {routes}')
             if len(routes) > 1:
                 routes = self.filterByASPath(routes)
+                print(f'after comparing aspath: {routes}')
             if len(routes) > 1:
                 routes = self.filterByOrigin(routes)
+                print(f'after comparing origin: {routes}')
             if len(routes) > 1:
                 routes = self.filterByLowestSrc(routes)
+                print(f'after comparing lowest src: {routes}')
 
             opt_route = routes[0]
             print(f'----FOUND OPTIMAL ROUTE: {opt_route}')
@@ -315,6 +328,40 @@ class Router:
 
         return True
 
+    def withdraw(self, packet):
+        peer = packet['src']
+        src = self.our_addr(peer)
+        self.storeUpdate(packet)
+
+        networks_to_remove = packet['msg']
+        print(f'----test routes {networks_to_remove}')
+
+        for route in networks_to_remove:
+            network = route['network']
+            netmask = route['netmask']
+            if (network, netmask) not in self.forwarding_table:
+                return
+            
+            # Filter out entries that match peer
+            forwarding_table_data = self.forwarding_table.get((network, netmask))
+            updated_table_data = [entry for entry in forwarding_table_data if entry.get('peer') != peer]
+            self.forwarding_table[(network, netmask)] = updated_table_data
+
+            if not updated_table_data:
+                del self.forwarding_table[(network, netmask)]
+                
+
+        for dst, rel in self.relations.items():
+            if not peer == dst:
+                packet['src'] = self.our_addr(dst)
+                packet['dst'] = dst
+                try:
+                    self.send(dst, json.dumps(packet))
+                except Exception as e:
+                    print(f"ERROR WHEN UPDATING: {e}")
+                    return
+        return True
+
     def handlePacket(self, packet):
         noerror = False
         type = packet['type']
@@ -324,6 +371,8 @@ class Router:
             noerror = self.data(packet)
         elif type == 'dump':
             noerror = self.dump(packet)
+        elif type == 'withdraw':
+            noerror = self.withdraw(packet)
         else:
             print(f'Unknown packet type')
             return
