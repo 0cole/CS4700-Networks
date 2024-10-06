@@ -1,6 +1,7 @@
 #!/usr/bin/env -S python3 -u
 
 import argparse, socket, time, json, select, struct, sys, math
+import struct
 
 class Router:
 
@@ -84,20 +85,26 @@ class Router:
         peer = packet['src']
         network = packet['msg']['network']
         netmask = packet['msg']['netmask']
+        localpref = packet['msg']['localpref']
+        selfOrigin = packet['msg']['selfOrigin']
         ASPath = packet['msg']['ASPath']
+        origin = packet['msg']['origin']
 
         # Save this in our forwarding table
         neighbor_dict = {
-            'ASPath': ASPath,
-            'localpref': packet['msg']['localpref'],
             'netmask': netmask,
             'network': network,
-            'origin': packet['msg']['origin'],
-            'selfOrigin': packet['msg']['selfOrigin'],
+            'localpref': localpref,
+            'selfOrigin': selfOrigin,
+            'ASPath': ASPath,
+            'origin': origin,
             'peer': peer
         }
 
-        self.forwarding_table[(network, netmask)] = neighbor_dict
+        if (network, netmask) not in self.forwarding_table:
+            self.forwarding_table[(network, netmask)] = []
+        self.forwarding_table[(network, netmask)].append(neighbor_dict)
+
         ASPath = [self.asn] + ASPath
 
         # Send to every neighbor in self.relations
@@ -120,6 +127,129 @@ class Router:
                         print(f"ERROR WHEN UPDATING: {e}")
                         return
         return True
+    
+    def filterBySubnet(self, all_routes):
+        possible_routes = []
+        max_subnet = 0
+
+        for route in all_routes:
+            subnet = route.get('netmask')
+            bin_subnet = bin(struct.unpack('!I', socket.inet_aton(subnet))[0])[2:]
+            cidr = bin_subnet.count('1')
+            
+            if cidr == max_subnet:
+                possible_routes.append(route)
+            elif cidr > max_subnet:
+                max_subnet = cidr
+                possible_routes = [route]
+
+        return possible_routes
+
+    def filterByLocalpref(self, all_routes):
+        possible_routes = []
+        max_localpref = 0
+
+        for route in all_routes:
+            localpref = route.get('localpref')
+
+            if localpref == max_localpref:
+                possible_routes.append(route)
+            elif localpref > max_localpref:
+                possible_routes = [route]
+        return possible_routes
+
+    def filterBySelfOrigin(self, all_routes):
+        possible_routes = []
+
+        for route in all_routes:
+            if route.get('selfOrigin') == True:
+                possible_routes.append(route)
+        return possible_routes
+
+    def filterByASPath(self, all_routes):
+        possible_routes = []
+        min_aspath_len = float('inf')
+
+        for route in all_routes:
+            aspath_len = len(route.get('ASPath'))
+            
+            if aspath_len == min_aspath_len:
+                possible_routes.append(route)
+            elif aspath_len < min_aspath_len:
+                min_aspath_len = aspath_len
+                possible_routes = [route]
+        return possible_routes
+
+    def filterByOrigin(self, all_routes):
+        possible_routes = []
+        preference = ['IGP', 'EGP', 'UNK']
+        min_idx = 2 # Start at UNK
+
+        for route in all_routes:
+            origin = route.get('origin')
+            route_origin_idx = preference.index(origin)
+            
+            if route_origin_idx == min_idx:
+                possible_routes.append(route)
+            elif route_origin_idx < min_idx:
+                min_idx = route_origin_idx
+                possible_routes = [route]
+        return possible_routes
+    
+    def filterByLowestSrc(self, all_routes):
+        possible_ip = []
+        lowest_ip = float('inf')
+
+        for route in all_routes:
+            src = route.get('src')
+            octets = map(int, src.split('.'))
+            curr_ip = (next(octets) << 24) + (next(octets) << 16) + (next(octets) << 8) + next(octets)
+
+            if curr_ip < lowest_ip:
+                possible_ip = [route]
+        return possible_ip
+
+
+
+    def determineRoute(self, ip):
+        """
+        1. whichever route has the highest subnet mask
+        2. highest localpref
+        3. selfOrigin = True
+        4. shortest ASPath
+        5. origin (IGP > EGP > UNK)
+        6. Lowest src ip
+        """
+        
+        possible_routes = []
+        routes = []
+        for network_arr, neighbors in self.forwarding_table.items():
+            network = network_arr[0]
+            netmask = network_arr[1]
+            if self.applySubnetMask(ip, netmask) == \
+                    self.applySubnetMask(network, netmask):
+                possible_routes.append(neighbors)
+
+        for route in possible_routes:
+            routes += route
+
+        if routes:
+            if len(routes) > 1:
+                routes = self.filterBySubnet(routes)
+            if len(routes) > 1:
+                routes = self.filterByLocalpref(routes)
+            if len(routes) > 1:
+                routes = self.filterBySelfOrigin(routes)
+            if len(routes) > 1:
+                routes = self.filterByASPath(routes)
+            if len(routes) > 1:
+                routes = self.filterByOrigin(routes)
+            if len(routes) > 1:
+                routes = self.filterByLowestSrc(routes)
+
+        opt_route = routes[0]
+        print(f'----FOUND OPTIMAL ROUTE: {opt_route}')
+        return opt_route['peer']
 
     def data(self, packet):
         """
@@ -129,25 +259,27 @@ class Router:
             b. send if there is a match
         """
         peer = packet['dst']
-        src = self.our_addr(peer)
-        
-        # Create data message to send
-        data_msg = {
-            'type': 'data',
-            'src': src,
-            'dst': peer,
-            'msg': packet['msg']
-        }
 
-        # find neighbor to send data to by comparing networks with netmasks
-        for network_arr, neighbor in self.forwarding_table.items():
-            if self.applySubnetMask(peer, network_arr[1]) == \
-                self.applySubnetMask(network_arr[0], network_arr[1]):
-                try:
-                    self.send(neighbor['peer'], json.dumps(data_msg))
-                except Exception as e:
-                        print(f"ERROR WHEN SENDING DATA: {e}")
-                        return
+        opt_peer = self.determineRoute(peer)
+
+        print(f'----OPTIMAL PEER FOR {peer}: {opt_peer}')
+
+        try:
+            self.send(opt_peer, json.dumps(packet))
+        except Exception as e:
+            print(f"ERROR WHEN SENDING DATA: {e}")
+            return
+
+        # # find neighbor to send data to by comparing networks with netmasks
+        # for network_arr, neighbors in self.forwarding_table.items():
+        #     for neighbor in neighbors:
+        #         if self.applySubnetMask(peer, network_arr[1]) == \
+        #             self.applySubnetMask(network_arr[0], network_arr[1]):
+        #             try:
+        #                 self.send(neighbor['peer'], json.dumps(packet))
+        #             except Exception as e:
+        #                     print(f"ERROR WHEN SENDING DATA: {e}")
+        #                     return
         return True
     
     def applySubnetMask(self, ip, subnet_mask):
@@ -177,18 +309,19 @@ class Router:
         }
 
         # Add each entry into the dump dict
-        for network_arr, neighbor_dict in self.forwarding_table.items():
-            src_dict = {
-                'ASPath': neighbor_dict['ASPath'],
-                'localpref': neighbor_dict['localpref'],
-                'origin': neighbor_dict['origin'],
-                'selfOrigin': neighbor_dict['selfOrigin'],
-                'network': network_arr[0],
-                'netmask': network_arr[1],
-                'peer': neighbor_dict['peer'],
-            }
-            dump['msg'].append(src_dict)
-        
+        for network_arr, neighbors in self.forwarding_table.items():
+            for neighbor in neighbors:
+                neighbor_dict = {
+                    'network': network_arr[0],
+                    'netmask': network_arr[1],
+                    'localpref': neighbor['localpref'],
+                    'selfOrigin': neighbor['selfOrigin'],
+                    'ASPath': neighbor['ASPath'],
+                    'origin': neighbor['origin'],
+                    'peer': neighbor['peer'],
+                }
+                dump['msg'].append(neighbor_dict)
+
         try:
             self.send(peer, json.dumps(dump))
         except Exception as e:
