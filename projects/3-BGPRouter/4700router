@@ -29,7 +29,7 @@ class Router:
         return "%d.%d.%d.%d" % (quads[0], quads[1], quads[2], quads[3])
 
     def send(self, network, message):
-        print(f'----SENDING TO {network}: {message}')
+        print(f'----SENDING TO {network} ----> {message}')
         self.sockets[network].sendto(message.encode('utf-8'), ('localhost', self.ports[network]))
 
     def sendNoRoute(self, ip):
@@ -55,8 +55,11 @@ class Router:
                 print("Received message '%s' from %s" % (msg, srcif))
 
                 try:
+
                     parsed_msg = json.loads(msg)
-                    print(f'-----PARSED THE FOLLOWING MESSAGE: {parsed_msg['type']}-----\n{parsed_msg}')
+                    message_type = parsed_msg['type']
+                    print(f'-----PARSED THE FOLLOWING MESSAGE: {message_type} -----> {parsed_msg}')
+                    print(f'srcif ----> {srcif}')
                     self.handlePacket(parsed_msg)
                 except json.JSONDecodeError as e:
                     print(f'Error parsing the json: {e}')
@@ -251,6 +254,7 @@ class Router:
         if peer in self.relations:
             for dst, rel in self.relations.items():
                 if not peer == dst:
+                    # Send ONLY the network, netmask, and aspath
                     update_packet = {
                         'src': self.our_addr(dst),
                         'dst': dst,
