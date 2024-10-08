@@ -74,7 +74,7 @@ class Router:
         max_subnet = 0
 
         for route in all_routes:
-            subnet = route.get('netmask')
+            subnet = route['netmask']
             bin_subnet = bin(struct.unpack('!I', socket.inet_aton(subnet))[0])[2:]
             cidr = bin_subnet.count('1')
             
@@ -91,7 +91,7 @@ class Router:
         max_localpref = 0
 
         for route in all_routes:
-            localpref = route.get('localpref')
+            localpref = route['localpref']
 
             if localpref == max_localpref:
                 possible_routes.append(route)
@@ -104,7 +104,7 @@ class Router:
         possible_routes = []
 
         for route in all_routes:
-            if route.get('selfOrigin') == True:
+            if route['selfOrigin'] == True:
                 possible_routes.append(route)
 
         # When there are no selfOrigin = True routes, just add all
@@ -118,7 +118,7 @@ class Router:
         min_aspath_len = float('inf')
 
         for route in all_routes:
-            aspath_len = len(route.get('ASPath'))
+            aspath_len = len(route['ASPath'])
             
             if aspath_len == min_aspath_len:
                 possible_routes.append(route)
@@ -133,7 +133,7 @@ class Router:
         min_idx = 2 # Start at UNK
 
         for route in all_routes:
-            origin = route.get('origin')
+            origin = route['origin']
             route_origin_idx = preference.index(origin)
             
             if route_origin_idx == min_idx:
@@ -148,7 +148,7 @@ class Router:
         lowest_ip = float('inf')
 
         for route in all_routes:
-            src = route.get('peer')
+            src = route['peer']
             octets = map(int, src.split('.'))
             curr_ip = (next(octets) << 24) + (next(octets) << 16) + (next(octets) << 8) + next(octets)
 
@@ -348,7 +348,7 @@ class Router:
             
             # Filter out entries that match peer
             forwarding_table_data = self.forwarding_table.get((network, netmask))
-            updated_table_data = [entry for entry in forwarding_table_data if entry.get('peer') != peer]
+            updated_table_data = [entry for entry in forwarding_table_data if entry['peer'] != peer]
             self.forwarding_table[(network, netmask)] = updated_table_data
 
             if not updated_table_data:
