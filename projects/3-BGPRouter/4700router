@@ -69,6 +69,9 @@ class Router:
         self.updates.append((self.update_counter, packet))
         self.update_counter += 1
 
+    def coalesce(self):
+        pass
+
     def filterBySubnet(self, all_routes):
         possible_routes = []
         max_subnet = 0
@@ -188,16 +191,20 @@ class Router:
         """
         
         possible_routes, routes = [], []
-        
-        for network_arr, neighbors in self.forwarding_table.items():
+
+        for network_arr, neighbor in self.forwarding_table.items():
             network = network_arr[0]
             netmask = network_arr[1]
+            src = network_arr[2]
             if self.applySubnetMask(ip, netmask) == \
                     self.applySubnetMask(network, netmask):
-                possible_routes.append(neighbors)
+                routes.append(neighbor)
 
-        for route in possible_routes:
-            routes += route
+        # for route in possible_routes:
+        #     routes += route
+
+        # print(possible_routes)
+        # print(routes)
 
         if routes:
             if len(routes) > 1:
@@ -268,10 +275,10 @@ class Router:
             'peer': peer
         }
 
-        # Add new entry to forwarding table f it does not already exist
-        if (network, netmask) not in self.forwarding_table:
-            self.forwarding_table[(network, netmask)] = []
-        self.forwarding_table[(network, netmask)].append(neighbor_dict)
+        # # Add new entry to forwarding table f it does not already exist
+        # if (network, netmask, peer) not in self.forwarding_table:
+        #     self.forwarding_table[(network, netmask, peer)] = []
+        self.forwarding_table[(network, netmask, peer)] = neighbor_dict
 
         ASPath = [self.asn] + ASPath
 
@@ -339,18 +346,17 @@ class Router:
         }
 
         # Add each entry into the dump dict
-        for network_arr, neighbors in self.forwarding_table.items():
-            for neighbor in neighbors:
-                neighbor_dict = {
-                    'network': network_arr[0],
-                    'netmask': network_arr[1],
-                    'localpref': neighbor['localpref'],
-                    'selfOrigin': neighbor['selfOrigin'],
-                    'ASPath': neighbor['ASPath'],
-                    'origin': neighbor['origin'],
-                    'peer': neighbor['peer'],
-                }
-                dump['msg'].append(neighbor_dict)
+        for network_arr, neighbor in self.forwarding_table.items():
+            neighbor_dict = {
+                'network': network_arr[0],
+                'netmask': network_arr[1],
+                'localpref': neighbor['localpref'],
+                'selfOrigin': neighbor['selfOrigin'],
+                'ASPath': neighbor['ASPath'],
+                'origin': neighbor['origin'],
+                'peer': network_arr[2],
+            }
+            dump['msg'].append(neighbor_dict)
 
         try:
             self.send(peer, json.dumps(dump))
@@ -369,16 +375,10 @@ class Router:
         for route in networks_to_remove:
             network = route['network']
             netmask = route['netmask']
-            if (network, netmask) not in self.forwarding_table:
+            if (network, netmask, peer) not in self.forwarding_table:
                 return
-            
-            # Filter out entries that match peer
-            forwarding_table_data = self.forwarding_table.get((network, netmask))
-            updated_table_data = [entry for entry in forwarding_table_data if entry['peer'] != peer]
-            self.forwarding_table[(network, netmask)] = updated_table_data
-
-            if not updated_table_data:
-                del self.forwarding_table[(network, netmask)]
+            else:
+                del self.forwarding_table[(network, netmask, peer)]
 
         for dst in self.relations.keys():
             if peer != dst:
