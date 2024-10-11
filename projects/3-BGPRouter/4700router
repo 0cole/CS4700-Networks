@@ -60,7 +60,7 @@ class Router:
                     message_type = parsed_msg['type']
                     print(f'-----PARSED THE FOLLOWING MESSAGE: {message_type} -----> {parsed_msg}')
                     print(f'srcif ----> {srcif}')
-                    self.handlePacket(parsed_msg)
+                    self.handlePacket(parsed_msg, srcif)
                 except json.JSONDecodeError as e:
                     print(f'Error parsing the json: {e}')
         return
@@ -156,7 +156,26 @@ class Router:
                 possible_ip = [route]
         return possible_ip
 
-    def determineRoute(self, ip):
+    def valididateRelationship(self, src, dst):
+        """
+        Update received from a customer: send updates to all other neighbors
+        Update received from a peer or a provider: only send updates to your customers
+        """
+
+        src_rel = self.relations[src]
+        dst_rel = self.relations[dst]
+
+        print(f'src_rel ----> {src_rel}')
+        print(f'dst_rel ----> {dst_rel}')
+
+        if src_rel == 'cust':
+            return dst
+        elif dst_rel == 'cust':
+            return dst
+        return None
+
+
+    def determineRoute(self, ip, srcif):
         """
         Generate all possible routes then filter in the follwing order
         until only 1 route remains.
@@ -168,8 +187,8 @@ class Router:
         6. Lowest src ip
         """
         
-        possible_routes = []
-        routes = []
+        possible_routes, routes = [], []
+        
         for network_arr, neighbors in self.forwarding_table.items():
             network = network_arr[0]
             netmask = network_arr[1]
@@ -200,9 +219,14 @@ class Router:
                 routes = self.filterByLowestSrc(routes)
                 print(f'after comparing lowest src: {routes}')
 
-            opt_route = routes[0]
-            print(f'----FOUND OPTIMAL ROUTE: {opt_route}')
-            return opt_route['peer']
+            if len(routes) == 1:
+                opt_route = routes[0]['peer']
+                confirmed_route = self.valididateRelationship(srcif, opt_route)
+
+                print(f'----FOUND OPTIMAL ROUTE: {confirmed_route}')
+                return confirmed_route
+            else:
+                self.sendNoRoute(ip)
         return None # If there are no valid routes
     
     def applySubnetMask(self, ip, subnet_mask):
@@ -216,7 +240,7 @@ class Router:
         except ValueError:
             raise ValueError(f"Invalid IP or subnet mask: {ip}, {subnet_mask}")
 
-    def update(self, packet):
+    def update(self, packet, srcif):
         """
         1. Save this update for future reference
         2. Create an entry in the forward table
@@ -244,6 +268,7 @@ class Router:
             'peer': peer
         }
 
+        # Add new entry to forwarding table f it does not already exist
         if (network, netmask) not in self.forwarding_table:
             self.forwarding_table[(network, netmask)] = []
         self.forwarding_table[(network, netmask)].append(neighbor_dict)
@@ -252,11 +277,16 @@ class Router:
 
         # Send to every neighbor in self.relations
         if peer in self.relations:
-            for dst, rel in self.relations.items():
-                if not peer == dst:
+            for dst in self.relations.keys():
+                confirmed_dst = self.valididateRelationship(srcif, dst)
+                if confirmed_dst == None:
+                    return False
+                
+                src = self.our_addr(dst)
+                if peer != dst:
                     # Send ONLY the network, netmask, and aspath
                     update_packet = {
-                        'src': self.our_addr(dst),
+                        'src': src,
                         'dst': dst,
                         'type': 'update',
                         'msg': {
@@ -272,21 +302,19 @@ class Router:
                         return
         return True
     
-    def data(self, packet):
+    def data(self, packet, srcif):
         """
         1. Create message to send
-        2. Find if the neighbor is valid
-            a. Compare if the peer matches one of the subnet masked ips
-            b. send if there is a match
+        2. Validate neighbor's route
         """
         peer = packet['dst']
-        opt_peer = self.determineRoute(peer)
+        opt_peer = self.determineRoute(peer, srcif)
 
-        # If there are no valid routes to peer
+        # If there is an invalid relationship
         if opt_peer == None:
-            self.sendNoRoute(peer)
+            return False
 
-        print(f'----OPTIMAL PEER FOR {peer}: {opt_peer}')
+        print(f'----OPTIMAL PEER FOR {peer} ----> {opt_peer}')
 
         try:
             self.send(opt_peer, json.dumps(packet))
@@ -334,11 +362,9 @@ class Router:
 
     def withdraw(self, packet):
         peer = packet['src']
-        src = self.our_addr(peer)
         self.storeUpdate(packet)
 
         networks_to_remove = packet['msg']
-        print(f'----test routes {networks_to_remove}')
 
         for route in networks_to_remove:
             network = route['network']
@@ -353,10 +379,9 @@ class Router:
 
             if not updated_table_data:
                 del self.forwarding_table[(network, netmask)]
-                
 
-        for dst, rel in self.relations.items():
-            if not peer == dst:
+        for dst in self.relations.keys():
+            if peer != dst:
                 packet['src'] = self.our_addr(dst)
                 packet['dst'] = dst
                 try:
@@ -366,13 +391,14 @@ class Router:
                     return
         return True
 
-    def handlePacket(self, packet):
+    def handlePacket(self, packet, srcif):
         noerror = False
         type = packet['type']
+        
         if type == 'update':
-            noerror = self.update(packet)
+            noerror = self.update(packet, srcif)
         elif type == 'data':
-            noerror = self.data(packet)
+            noerror = self.data(packet, srcif)
         elif type == 'dump':
             noerror = self.dump(packet)
         elif type == 'withdraw':
