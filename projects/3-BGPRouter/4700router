@@ -21,7 +21,9 @@ class Router:
             self.sockets[neighbor].bind(('localhost', 0))
             self.ports[neighbor] = int(port)
             self.relations[neighbor] = relation
-            self.send(neighbor, json.dumps({ "type": "handshake", "src": self.our_addr(neighbor), "dst": neighbor, "msg": {}  }))
+            self.send(neighbor, json.dumps({ "type": "handshake", 
+                                            "src": self.our_addr(neighbor), 
+                                            "dst": neighbor, "msg": {}  }))
 
     def our_addr(self, dst):
         quads = list(int(qdn) for qdn in dst.split('.'))
@@ -69,8 +71,101 @@ class Router:
         self.updates.append((self.update_counter, packet))
         self.update_counter += 1
 
+    def ipToBin(self, netmask):
+        octets = map(int, netmask.split('.'))
+        return ''.join(f'{octet:08b}' for octet in octets)
+    
+    def ipToInt(self, ip):
+        octets = map(int, ip.split('.'))
+        return sum(octet << (8 * (3 - i)) for i, octet in enumerate(octets))
+    
+    def intToIp(self, int_ip):
+        return '.'.join(str((int_ip >> (8 * i)) & 0xFF) for i in reversed(range(4)))
+
+    def verifyAggrigation(self, network1_arr1, network2_arr):
+        """
+        Check if two routes are capable of aggregation. 
+        Return false if they are not aggregatable.
+        """
+        route1_network, route1_netmask, route1_ip = \
+            network1_arr1[0], network1_arr1[1], network1_arr1[2]
+        route2_network, route2_netmask, route2_ip = \
+            network2_arr[0], network2_arr[1], network2_arr[2]
+
+        if route2_netmask == route1_netmask and route1_ip == route2_ip:
+            network1_int = self.ipToInt(route1_network)
+            network2_int = self.ipToInt(route2_network)
+
+            netmask1_len = (self.ipToBin(route1_netmask)).count('0')
+            netmask2_len = (self.ipToBin(route2_netmask)).count('0')
+
+            masked_network1 = network1_int >> (netmask1_len + 1)
+            masked_network2 = network2_int >> (netmask2_len + 1)
+
+            return masked_network1 == masked_network2
+        else:
+            return False
+    
+    def generateAggregateRoute(self, network_arr):
+        """
+        Shift the netmask to accomodate the new aggregation.
+        """
+        network, netmask, ip = network_arr[0], network_arr[1], network_arr[2]
+
+        network_int = self.ipToInt(network)
+        netmask_bin = self.ipToBin(netmask)
+
+        netmask_zeroes = netmask_bin.count('0')
+        matched_network = network_int >> (netmask_zeroes + 1)
+
+        new_network = self.intToIp(matched_network << (netmask_zeroes + 1))
+        new_netmask = self.intToIp(int(netmask_bin, 2) - 2 ** netmask_zeroes)
+
+        return (new_network, new_netmask, ip)
+
+    def findAggregatableRoute(self):
+        """
+        Look for any routes that can be aggregated then perform it.
+        """
+        for network_arr1, _ in self.forwarding_table.items():
+            for network_arr2, _ in self.forwarding_table.items():
+                if network_arr2 == network_arr1:
+                        continue
+                
+                if self.verifyAggrigation(network_arr1, network_arr2):
+                    route = self.generateAggregateRoute(network_arr1)
+                    return [network_arr1, network_arr2, route]
+        return None
+
     def coalesce(self):
-        pass
+        """
+        Handle the coalescing of two routes. Called when routing table is updated.
+        Approach is semi-naive since it iterates over all of the routes in the
+        forwarding table.
+        """
+        print('--------COALESCING-----------')
+        while True:
+            aggretable_routes = self.findAggregatableRoute()
+            print(f'aggretable_routes ----> {aggretable_routes}')
+            if not aggretable_routes:
+                break
+
+            route_to_add = aggretable_routes[0]
+            route_to_remove = aggretable_routes[1]
+            aggregated_route = aggretable_routes[2]
+
+            print(f'Removing route: {route_to_remove}')
+            del self.forwarding_table[route_to_remove]
+
+            prev_route = None
+            for route, neighbor in self.forwarding_table.items():
+                if route[0] == aggregated_route[0]:
+                    prev_route = route
+                    break
+            
+            print(f'Aggregating {route_to_remove} with {route_to_add} ----> {aggregated_route}')
+            del self.forwarding_table[prev_route]
+            self.forwarding_table[aggregated_route] = neighbor 
 
     def filterBySubnet(self, all_routes):
         possible_routes = []
@@ -279,7 +374,7 @@ class Router:
         # if (network, netmask, peer) not in self.forwarding_table:
         #     self.forwarding_table[(network, netmask, peer)] = []
         self.forwarding_table[(network, netmask, peer)] = neighbor_dict
-
+        self.coalesce()
         ASPath = [self.asn] + ASPath
 
         # Send to every neighbor in self.relations
