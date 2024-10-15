@@ -1,7 +1,7 @@
 #!/usr/bin/env -S python3 -u
 
 import argparse, socket, time, json, select, struct, sys, math
-import struct
+import struct, copy
 
 class Router:
 
@@ -13,7 +13,7 @@ class Router:
         self.ports = {}
         self.forwarding_table = {}
         self.updates = []
-        self.update_counter = 0
+        self.changes = []
         for relationship in connections:
             port, neighbor, relation = relationship.split("-")
 
@@ -68,8 +68,7 @@ class Router:
         return
         
     def storeUpdate(self, packet):
-        self.updates.append((self.update_counter, packet))
-        self.update_counter += 1
+        self.updates.append(packet)
 
     def ipToBin(self, netmask):
         octets = map(int, netmask.split('.'))
@@ -348,8 +347,6 @@ class Router:
         2. Create an entry in the forward table
         3. For every neighbor, send the update announcement
         """
-        # Store the update in a tuple with a counter that indicates when the packet was received
-        self.storeUpdate(packet)
 
         peer = packet['src']
         network = packet['msg']['network']
@@ -460,19 +457,64 @@ class Router:
             return
 
         return True
+    
+    def disaggregate(self):
+        """
+        Create a new forwarding table and start over with
+        saved update/withdrawal messages. Call coalesce after
+        everything is finished. This appraoch can be optimized
+        heavily.
+        """
+        print('--------DISAGGREGATING-----------')
+        new_table = {}
+
+        for entry in self.changes:
+
+            if entry['type'] == 'update':
+                peer = entry['src']
+                netmask = entry['msg']['netmask']
+                network = entry['msg']['network']
+                entry_dict = {
+                    'netmask': netmask,
+                    'network': network,
+                    'localpref': entry['msg']['localpref'],
+                    'selfOrigin': entry['msg']['selfOrigin'],
+                    'ASPath': entry['msg']['ASPath'],
+                    'origin': entry['msg']['origin'],
+                    'peer': peer,
+                }
+                print(f'SAVING ----> {(network,netmask, peer)}\n')
+                new_table[(network, netmask, peer)] = entry_dict
+        
+            if entry['type'] == 'withdraw':
+                remove = False
+                peer = entry['src']
+                netmask = entry['msg'][0]['netmask']
+                network = entry['msg'][0]['network']
+
+                for new_entry in new_table:
+                    if network == new_entry[0] and peer == new_entry[2]:
+                        remove = True
+                if remove:
+                    print(f'DELETING ----> {(network, netmask, peer)}')
+                    del new_table[(network, netmask, peer)]
+
+        self.forwarding_table = new_table
+        self.coalesce()
+
+        return
+
 
     def withdraw(self, packet):
-        peer = packet['src']
-        self.storeUpdate(packet)
+        self.disaggregate()
 
+        peer = packet['src']
         networks_to_remove = packet['msg']
 
         for route in networks_to_remove:
             network = route['network']
             netmask = route['netmask']
-            if (network, netmask, peer) not in self.forwarding_table:
-                return
-            else:
+            if (network, netmask, peer) in self.forwarding_table:
                 del self.forwarding_table[(network, netmask, peer)]
 
         for dst in self.relations.keys():
@@ -491,12 +533,16 @@ class Router:
         type = packet['type']
         
         if type == 'update':
+            self.changes.append(copy.deepcopy(packet))
+            print(f'UPDATED CHANGES WITH ----> {packet}')
             noerror = self.update(packet, srcif)
         elif type == 'data':
             noerror = self.data(packet, srcif)
         elif type == 'dump':
             noerror = self.dump(packet)
         elif type == 'withdraw':
+            self.changes.append(copy.deepcopy(packet))
+            print(f'UPDATED CHANGES WITH ----> {packet}')
             noerror = self.withdraw(packet)
         else:
             print(f'Unknown packet type')
