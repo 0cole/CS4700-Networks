@@ -81,6 +81,202 @@ class Router:
     def intToIp(self, int_ip):
         return '.'.join(str((int_ip >> (8 * i)) & 0xFF) for i in reversed(range(4)))
 
+    def filterBySubnet(self, all_routes):
+        """
+        Filter all routes based on their subnet length. 
+        """
+        possible_routes = []
+        max_subnet = 0
+
+        for route in all_routes:
+            subnet = route['netmask']
+            bin_subnet = bin(struct.unpack('!I', socket.inet_aton(subnet))[0])[2:]
+            cidr = bin_subnet.count('1')
+            
+            if cidr == max_subnet:
+                possible_routes.append(route)
+            elif cidr > max_subnet:
+                max_subnet = cidr
+                possible_routes = [route]
+
+        return possible_routes
+
+    def filterByLocalpref(self, all_routes):
+        """
+        Filter all routes based on their localprefs. Only the routes
+        with the highest localpref get saved.
+        """
+        possible_routes = []
+        max_localpref = 0
+
+        for route in all_routes:
+            localpref = route['localpref']
+
+            if localpref == max_localpref:
+                possible_routes.append(route)
+            elif localpref > max_localpref:
+                max_localpref = localpref
+                possible_routes = [route]
+        return possible_routes
+
+    def filterBySelfOrigin(self, all_routes):
+        """
+        Filter all_routes based on their selfOrigins. If any are true,
+        only return them. If they are all false, skip this step.
+        """
+        possible_routes = []
+
+        for route in all_routes:
+            if route['selfOrigin'] == True:
+                possible_routes.append(route)
+
+        # When there are no selfOrigin = True routes, just add all
+        # and go to next step
+        if len(possible_routes) == 0:
+            possible_routes = all_routes
+        return possible_routes
+
+    def filterByASPath(self, all_routes):
+        possible_routes = []
+        min_aspath_len = float('inf')
+
+        for route in all_routes:
+            aspath_len = len(route['ASPath'])
+            
+            if aspath_len == min_aspath_len:
+                possible_routes.append(route)
+            elif aspath_len < min_aspath_len:
+                min_aspath_len = aspath_len
+                possible_routes = [route]
+        return possible_routes
+
+    def filterByOrigin(self, all_routes):
+        """
+        Filter all_routes based on preference for each route's origin.
+
+        The preference is IGP > EGP > UNK where IGP is most preferential.
+        """
+        possible_routes = []
+        preference = ['IGP', 'EGP', 'UNK']
+        min_idx = 2 # Start at UNK
+
+        for route in all_routes:
+            origin = route['origin']
+            route_origin_idx = preference.index(origin)
+            
+            if route_origin_idx == min_idx:
+                possible_routes.append(route)
+            elif route_origin_idx < min_idx:
+                min_idx = route_origin_idx
+                possible_routes = [route]
+        return possible_routes
+    
+    def filterByLowestSrc(self, all_routes):
+        """
+        Determine which IP address in all_routes is the lowest numerically.
+        """
+        possible_ip = []
+        lowest_ip = float('inf')
+
+        for route in all_routes:
+            src = route['peer']
+            octets = map(int, src.split('.'))
+            curr_ip = (next(octets) << 24) + (next(octets) << 16) + (next(octets) << 8) + next(octets)
+
+            if curr_ip < lowest_ip:
+                possible_ip = [route]
+        return possible_ip
+
+    def valididateRelationship(self, src, dst):
+        """
+        1. Check if the relationship between src and dst are appropriate
+           using the following criteria
+            a. Update received from a customer: send updates 
+               to all other neighbors
+            b. Update received from a peer or a provider: 
+               only send updates to your customers
+        2. Return dst if valid relationship, otherwise return None
+        """
+
+        src_rel = self.relations[src]
+        dst_rel = self.relations[dst]
+
+        print(f'src_rel ----> {src_rel}')
+        print(f'dst_rel ----> {dst_rel}')
+
+        if src_rel == 'cust':
+            return dst
+        elif dst_rel == 'cust':
+            return dst
+        return None
+
+
+    def determineRoute(self, ip, srcif):
+        """
+        Generate all possible routes then filter in the follwing order
+        until only 1 route remains. Then return the route.
+        1. whichever route has the highest subnet mask
+        2. highest localpref
+        3. selfOrigin = True
+        4. shortest ASPath
+        5. origin (IGP > EGP > UNK)
+        6. Lowest src ip
+        """
+        
+        routes = []
+
+        for network_arr, neighbor in self.forwarding_table.items():
+            network = network_arr[0]
+            netmask = network_arr[1]
+            src = network_arr[2]
+            if self.applySubnetMask(ip, netmask) == \
+                    self.applySubnetMask(network, netmask):
+                routes.append(neighbor)
+
+        if routes:
+            if len(routes) > 1:
+                routes = self.filterBySubnet(routes)
+                print(f'after comparing subnets: {routes}')
+            if len(routes) > 1:
+                routes = self.filterByLocalpref(routes)
+                print(f'after comparing localpref: {routes}')
+            if len(routes) > 1:
+                routes = self.filterBySelfOrigin(routes)
+                print(f'after comparing selforigin: {routes}')
+            if len(routes) > 1:
+                routes = self.filterByASPath(routes)
+                print(f'after comparing aspath: {routes}')
+            if len(routes) > 1:
+                routes = self.filterByOrigin(routes)
+                print(f'after comparing origin: {routes}')
+            if len(routes) > 1:
+                routes = self.filterByLowestSrc(routes)
+                print(f'after comparing lowest src: {routes}')
+
+            if len(routes) == 1:
+                opt_route = routes[0]['peer']
+                confirmed_route = self.valididateRelationship(srcif, opt_route)
+
+                print(f'----FOUND OPTIMAL ROUTE: {confirmed_route}')
+                return confirmed_route
+            else:
+                self.sendNoRoute(ip)
+        return None # If there are no valid routes
+    
+    def applySubnetMask(self, ip, subnet_mask):
+        """
+        Helper for determineRoute. Converts an ip to its masked version.
+        """
+        try:
+            ip_octets = map(int, ip.split('.'))
+            mask_octets = map(int, subnet_mask.split('.'))
+            # apply mask with AND operation
+            masked_ip = '.'.join(str(octet & mask) for octet, mask in zip(ip_octets, mask_octets))
+            return masked_ip
+        
+        except ValueError:
+            raise ValueError(f"Invalid IP or subnet mask: {ip}, {subnet_mask}")
+
     def verifyAggrigation(self, network1_arr1, network2_arr):
         """
         Check if two routes are capable of aggregation. 
@@ -166,186 +362,12 @@ class Router:
             del self.forwarding_table[prev_route]
             self.forwarding_table[aggregated_route] = neighbor 
 
-    def filterBySubnet(self, all_routes):
-        possible_routes = []
-        max_subnet = 0
-
-        for route in all_routes:
-            subnet = route['netmask']
-            bin_subnet = bin(struct.unpack('!I', socket.inet_aton(subnet))[0])[2:]
-            cidr = bin_subnet.count('1')
-            
-            if cidr == max_subnet:
-                possible_routes.append(route)
-            elif cidr > max_subnet:
-                max_subnet = cidr
-                possible_routes = [route]
-
-        return possible_routes
-
-    def filterByLocalpref(self, all_routes):
-        possible_routes = []
-        max_localpref = 0
-
-        for route in all_routes:
-            localpref = route['localpref']
-
-            if localpref == max_localpref:
-                possible_routes.append(route)
-            elif localpref > max_localpref:
-                max_localpref = localpref
-                possible_routes = [route]
-        return possible_routes
-
-    def filterBySelfOrigin(self, all_routes):
-        possible_routes = []
-
-        for route in all_routes:
-            if route['selfOrigin'] == True:
-                possible_routes.append(route)
-
-        # When there are no selfOrigin = True routes, just add all
-        # and go to next step
-        if len(possible_routes) == 0:
-            possible_routes = all_routes
-        return possible_routes
-
-    def filterByASPath(self, all_routes):
-        possible_routes = []
-        min_aspath_len = float('inf')
-
-        for route in all_routes:
-            aspath_len = len(route['ASPath'])
-            
-            if aspath_len == min_aspath_len:
-                possible_routes.append(route)
-            elif aspath_len < min_aspath_len:
-                min_aspath_len = aspath_len
-                possible_routes = [route]
-        return possible_routes
-
-    def filterByOrigin(self, all_routes):
-        possible_routes = []
-        preference = ['IGP', 'EGP', 'UNK']
-        min_idx = 2 # Start at UNK
-
-        for route in all_routes:
-            origin = route['origin']
-            route_origin_idx = preference.index(origin)
-            
-            if route_origin_idx == min_idx:
-                possible_routes.append(route)
-            elif route_origin_idx < min_idx:
-                min_idx = route_origin_idx
-                possible_routes = [route]
-        return possible_routes
-    
-    def filterByLowestSrc(self, all_routes):
-        possible_ip = []
-        lowest_ip = float('inf')
-
-        for route in all_routes:
-            src = route['peer']
-            octets = map(int, src.split('.'))
-            curr_ip = (next(octets) << 24) + (next(octets) << 16) + (next(octets) << 8) + next(octets)
-
-            if curr_ip < lowest_ip:
-                possible_ip = [route]
-        return possible_ip
-
-    def valididateRelationship(self, src, dst):
-        """
-        Update received from a customer: send updates to all other neighbors
-        Update received from a peer or a provider: only send updates to your customers
-        """
-
-        src_rel = self.relations[src]
-        dst_rel = self.relations[dst]
-
-        print(f'src_rel ----> {src_rel}')
-        print(f'dst_rel ----> {dst_rel}')
-
-        if src_rel == 'cust':
-            return dst
-        elif dst_rel == 'cust':
-            return dst
-        return None
-
-
-    def determineRoute(self, ip, srcif):
-        """
-        Generate all possible routes then filter in the follwing order
-        until only 1 route remains.
-        1. whichever route has the highest subnet mask
-        2. highest localpref
-        3. selfOrigin = True
-        4. shortest ASPath
-        5. origin (IGP > EGP > UNK)
-        6. Lowest src ip
-        """
-        
-        possible_routes, routes = [], []
-
-        for network_arr, neighbor in self.forwarding_table.items():
-            network = network_arr[0]
-            netmask = network_arr[1]
-            src = network_arr[2]
-            if self.applySubnetMask(ip, netmask) == \
-                    self.applySubnetMask(network, netmask):
-                routes.append(neighbor)
-
-        # for route in possible_routes:
-        #     routes += route
-
-        # print(possible_routes)
-        # print(routes)
-
-        if routes:
-            if len(routes) > 1:
-                routes = self.filterBySubnet(routes)
-                print(f'after comparing subnets: {routes}')
-            if len(routes) > 1:
-                routes = self.filterByLocalpref(routes)
-                print(f'after comparing localpref: {routes}')
-            if len(routes) > 1:
-                routes = self.filterBySelfOrigin(routes)
-                print(f'after comparing selforigin: {routes}')
-            if len(routes) > 1:
-                routes = self.filterByASPath(routes)
-                print(f'after comparing aspath: {routes}')
-            if len(routes) > 1:
-                routes = self.filterByOrigin(routes)
-                print(f'after comparing origin: {routes}')
-            if len(routes) > 1:
-                routes = self.filterByLowestSrc(routes)
-                print(f'after comparing lowest src: {routes}')
-
-            if len(routes) == 1:
-                opt_route = routes[0]['peer']
-                confirmed_route = self.valididateRelationship(srcif, opt_route)
-
-                print(f'----FOUND OPTIMAL ROUTE: {confirmed_route}')
-                return confirmed_route
-            else:
-                self.sendNoRoute(ip)
-        return None # If there are no valid routes
-    
-    def applySubnetMask(self, ip, subnet_mask):
-        try:
-            ip_octets = map(int, ip.split('.'))
-            mask_octets = map(int, subnet_mask.split('.'))
-            # mask with AND operation
-            masked_ip = '.'.join(str(octet & mask) for octet, mask in zip(ip_octets, mask_octets))
-            return masked_ip
-        
-        except ValueError:
-            raise ValueError(f"Invalid IP or subnet mask: {ip}, {subnet_mask}")
-
     def update(self, packet, srcif):
         """
-        1. Save this update for future reference
-        2. Create an entry in the forward table
-        3. For every neighbor, send the update announcement
+        1. Save this update for future reference.
+        2. Create an entry in the forward table.
+        3. Coalesce if possible.
+        3. For every neighbor, send the update announcement.
         """
 
         peer = packet['src']
@@ -403,8 +425,8 @@ class Router:
     
     def data(self, packet, srcif):
         """
-        1. Create message to send
-        2. Validate neighbor's route
+        1. Find the optimal peer to send through based off of several filters.
+        2. Forward the received packet to the optimal peer.
         """
         peer = packet['dst']
         opt_peer = self.determineRoute(peer, srcif)
@@ -424,9 +446,9 @@ class Router:
     
     def dump(self, packet):
         """
-        1. Create dump dict
+        1. Create dump dict.
             a. put every entry in the forwarding table into dump['msg']
-        2. Send dump dict to peer
+        2. Send dump dict to peer.
         """
         peer = packet['src']
         src = self.our_addr(peer)
@@ -460,16 +482,16 @@ class Router:
     
     def disaggregate(self):
         """
-        Create a new forwarding table and start over with
-        saved update/withdrawal messages. Call coalesce after
-        everything is finished. This appraoch can be optimized
-        heavily.
+        1. Create a new forwarding table and start over with saved 
+           update/withdrawal messages. 
+        2. Coalesce after new forwarding table is constructed. 
+        This appraoch can be optimized.
         """
         print('--------DISAGGREGATING-----------')
         new_table = {}
 
+        # Reconstruct self.forwarding_table
         for entry in self.changes:
-
             if entry['type'] == 'update':
                 peer = entry['src']
                 netmask = entry['msg']['netmask']
@@ -501,22 +523,30 @@ class Router:
 
         self.forwarding_table = new_table
         self.coalesce()
-
         return
 
 
     def withdraw(self, packet):
+        """
+        1. Initially disaggregate in case the network that sends the 
+           withdraw message has been aggregated and does not appear
+           in the forwardingtable. 
+        2. Remove that packet from the forwarding table. 
+        3. Send this withdraw message to everyone else you are connected to.
+        """
         self.disaggregate()
 
         peer = packet['src']
         networks_to_remove = packet['msg']
 
+        # Delete
         for route in networks_to_remove:
             network = route['network']
             netmask = route['netmask']
             if (network, netmask, peer) in self.forwarding_table:
                 del self.forwarding_table[(network, netmask, peer)]
 
+        # Send withdrawal to everyone else
         for dst in self.relations.keys():
             if peer != dst:
                 packet['src'] = self.our_addr(dst)
