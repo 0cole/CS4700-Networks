@@ -37,9 +37,8 @@ class Sender:
         sys.stderr.flush()
 
     def send(self, message):
-        # self.log("Sending message '%s'" % json.dumps(message)) # print message send
+        self.log(f"Sending packet with seq {message['seq']}")
         self.socket.sendto(json.dumps(message).encode("utf-8"), (self.host, self.port))
-
 
     def recv(self, socket):
         data, addr = socket.recvfrom(65535)
@@ -76,7 +75,6 @@ class Sender:
                 self.send(info["packet"])
                 # Update send time
                 self.packets[seq_num]["send_time"] = current_time
-
 
     def run(self):
         data_finished = False  # Flag to indicate if all data has been read
