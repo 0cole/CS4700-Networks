@@ -15,16 +15,18 @@ def verify_checksum(data, received_checksum):
 
 class Sender:
     def __init__(self, host, port):
+        self.sacked_seqs = set()  # Set to keep track of SACKed sequence numbers
+
         self.seq_num = 0
         self.send_base = 0
         self.cwnd = 1  # Congestion window size
-        self.ssthresh = 10  # Slow start threshold
+        self.ssthresh = 64  # Slow start threshold
         self.dup_ack_count = 0  # Duplicate ACK counter
         self.last_ack_num = -1  # Last acknowledged sequence number
 
         self.packets = {}  # Dictionary to store sent packets with their send times
         self.estimated_rtt = 0.5  # Initial RTT estimate
-        self.timeout_interval = 1.0  # Initial timeout interval
+        self.timeout_interval = 1.5  # Initial timeout interval
 
         self.host = host
         self.port = int(port)
@@ -41,11 +43,8 @@ class Sender:
         sys.stderr.write(message + "\n")
         sys.stderr.flush()
 
-    def send(self, message, retransmission=False):
-        if retransmission:
-            self.log(f"Retransmitting packet with seq {message['seq']}")
-        else:
-            self.log(f"Sending packet with seq {message['seq']}")
+    def send(self, message):
+        self.log(f"Sending packet with seq {message['seq']}")
         self.socket.sendto(json.dumps(message).encode("utf-8"), (self.host, self.port))
 
     def recv(self, socket):
@@ -62,6 +61,7 @@ class Sender:
         sack_list = ack_packet.get('sack', [])
         self.log(f"Received ACK for seq {ack_seq_num} with SACK {sack_list}")
         sack_set = set(sack_list)
+        self.sacked_seqs.update(sack_set)
 
         # Combine cumulative ACK and SACKed packets
         acked_seqs = set(range(self.send_base, ack_seq_num)) | sack_set
@@ -76,6 +76,7 @@ class Sender:
             last_acked_seq_num = ack_seq_num - 1
             packet_info = self.packets.get(last_acked_seq_num)
             if packet_info and not packet_info.get('retransmitted', False):
+                # Update RTT only if the packet was not retransmitted
                 sample_rtt = time.time() - packet_info['send_time']
                 # Update Estimated RTT and RTT Deviation
                 self.estimated_rtt = 0.875 * self.estimated_rtt + 0.125 * sample_rtt
@@ -84,11 +85,6 @@ class Sender:
                 self.log(f"Updated timeout interval to {self.timeout_interval}")
 
             self.send_base = ack_seq_num
-
-            # Remove all acknowledged packets from self.packets
-            for seq_num in acked_seqs:
-                if seq_num in self.packets:
-                    del self.packets[seq_num]
 
             # Update congestion window
             if self.cwnd < self.ssthresh:
@@ -101,10 +97,24 @@ class Sender:
                 self.cwnd += increment
                 self.log(f"Congestion Avoidance: Increased cwnd to {self.cwnd}")
 
+            # Remove all acknowledged packets from self.packets and self.sacked_seqs
+            for seq_num in acked_seqs:
+                if seq_num in self.packets:
+                    del self.packets[seq_num]
+                if seq_num in self.sacked_seqs:
+                    self.sacked_seqs.remove(seq_num)
+
             # Reset previous SACK set
             self.previous_sack_set = set()
 
         elif ack_seq_num == self.last_ack_num:
+            # Remove all acknowledged packets from self.packets and self.sacked_seqs
+            for seq_num in acked_seqs:
+                if seq_num in self.packets:
+                    del self.packets[seq_num]
+                if seq_num in self.sacked_seqs:
+                    self.sacked_seqs.remove(seq_num)
+
             # Duplicate ACK received
             if sack_list:
                 # Check for new SACKed packets
@@ -134,10 +144,16 @@ class Sender:
                     seq_num = min(missing_seqs)
                     if seq_num in self.packets:
                         packet_info = self.packets[seq_num]
-                        self.send(packet_info['packet'], retransmission=True)
+                        self.send(packet_info['packet'])
                         packet_info['send_time'] = time.time()
                         packet_info['retransmitted'] = True  # Mark as retransmitted
         else:
+            # Remove all acknowledged packets from self.packets and self.sacked_seqs
+            for seq_num in acked_seqs:
+                if seq_num in self.packets:
+                    del self.packets[seq_num]
+                if seq_num in self.sacked_seqs:
+                    self.sacked_seqs.remove(seq_num)
             # Out-of-order or old ACK received
             self.log(f"Received out-of-order or old ACK for seq {ack_seq_num}")
 
@@ -145,7 +161,7 @@ class Sender:
         data_finished = False  # Indicates if all data has been read
         while True:
             # Send new packets if window is not full and data is available
-            while self.seq_num < self.send_base + int(self.cwnd) and not data_finished:
+            while len(self.packets) < self.cwnd and not data_finished:
                 data = sys.stdin.read(DATA_SIZE)
                 if not data:
                     data_finished = True  # No more data to send
@@ -157,7 +173,7 @@ class Sender:
                     "seq": self.seq_num,
                     "checksum": calculate_checksum(data),
                 }
-                self.send(packet)  # Initial transmission
+                self.send(packet)
                 self.packets[self.seq_num] = {
                     "packet": packet,
                     "send_time": time.time(),
@@ -167,7 +183,9 @@ class Sender:
 
             # Determine the timeout for select
             if self.packets:
-                earliest_send_time = min(info['send_time'] for info in self.packets.values())
+                # Consider only the earliest unacknowledged packet
+                earliest_unacked_seq = min(self.packets.keys())
+                earliest_send_time = self.packets[earliest_unacked_seq]['send_time']
                 time_since_earliest = time.time() - earliest_send_time
                 timeout = max(self.timeout_interval - time_since_earliest, 0)
             else:
@@ -183,17 +201,31 @@ class Sender:
                         if ack_packet and ack_packet.get('type') == 'ack':
                             self.handle_ack(ack_packet)
             else:
-                # Timeout occurred; retransmit unacknowledged packets
-                self.log("Timeout occurred, retransmitting unacknowledged packets")
+                # Timeout occurred; retransmit the earliest unacknowledged packet
+                self.log("Timeout occurred, retransmitting the earliest unacknowledged packet")
                 old_cwnd = self.cwnd
                 self.ssthresh = max(old_cwnd / 2, 2)
                 self.cwnd = 1
                 self.log(f"Updated ssthresh to {self.ssthresh}, cwnd to {self.cwnd}")
-                for seq_num in sorted(self.packets.keys()):
+
+                # Find the earliest unacknowledged packet not SACKed
+                unacked_seqs = sorted(self.packets.keys())
+                unsacked_unacked_seqs = [seq for seq in unacked_seqs if seq not in self.sacked_seqs]
+
+                if unsacked_unacked_seqs:
+                    seq_num = unsacked_unacked_seqs[0]
                     packet_info = self.packets[seq_num]
-                    self.send(packet_info['packet'], retransmission=True)
+                    self.send(packet_info['packet'])
                     packet_info['send_time'] = time.time()
-                    packet_info['retransmitted'] = True  # Mark as retransmitted
+                    packet_info['retransmitted'] = True
+                else:
+                    # All unacknowledged packets have been SACKed; retransmit the earliest one
+                    if unacked_seqs:
+                        seq_num = unacked_seqs[0]
+                        packet_info = self.packets[seq_num]
+                        self.send(packet_info['packet'])
+                        packet_info['send_time'] = time.time()
+                        packet_info['retransmitted'] = True
 
             # Check if all data has been sent and acknowledged
             if data_finished and not self.packets:
@@ -205,6 +237,8 @@ class Sender:
                     self.log(f"Unacknowledged packets: {unacked_seqs}")
                 else:
                     self.log("No unacknowledged packets")
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='send data')
