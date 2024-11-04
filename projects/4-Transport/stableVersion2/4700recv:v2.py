@@ -1,6 +1,7 @@
 #!/usr/bin/env -S python3 -u
 
 import argparse, socket, time, json, select, struct, sys, math
+
 import zlib
 
 def calculate_checksum(data):
@@ -24,7 +25,7 @@ class Receiver:
 
     def send(self, message):
         if self.remote_host is not None and self.remote_port is not None:
-            self.log(f"Sending ACK for seq {message['seq']} with SACK {message.get('sack', [])}")
+            self.log(f"Sending ACK for seq {message['seq']}")  # Log the ACK being sent
             self.socket.sendto(json.dumps(message).encode("utf-8"), (self.remote_host, self.remote_port))
         else:
             self.log("Remote host and port not set; cannot send ACK")
@@ -39,6 +40,7 @@ class Receiver:
             self.log(f"Set remote host to {self.remote_host}, port to {self.remote_port}")
 
         message = json.loads(data.decode("utf-8"))
+        # self.log(f"Received message {message}")  # Uncomment to log received messages
         return message
 
     def log(self, message):
@@ -69,21 +71,19 @@ class Receiver:
                             buffered_msg = self.buffer.pop(self.expected_seq_num)
                             print(buffered_msg['data'], end='', flush=True)
                             self.expected_seq_num += 1
-                        self.log(f"Received expected packet seq {seq_num}")
+                        self.log(f"Received expected packet seq {seq_num}; sending ACK for {self.expected_seq_num}")
                     elif seq_num > self.expected_seq_num:
                         # Buffer out-of-order packet
                         self.buffer[seq_num] = msg
-                        self.log(f"Buffered out-of-order packet seq {seq_num}")
+                        self.log(f"Buffered out-of-order packet seq {seq_num}; sending ACK for {self.expected_seq_num}")
                     else:
                         # Duplicate packet; already received and processed
-                        self.log(f"Received duplicate packet seq {seq_num}; discarding")
+                        self.log(f"Received duplicate packet seq {seq_num}; discarding; sending ACK for {self.expected_seq_num}")
 
-                    # Prepare the SACK information
-                    sack_list = sorted(self.buffer.keys())
+                    # Send ACK with seq = expected_seq_num (the next seq num expected)
                     ack_packet = {
                         "type": "ack",
                         "seq": self.expected_seq_num,
-                        "sack": sack_list,
                     }
                     self.send(ack_packet)
 
