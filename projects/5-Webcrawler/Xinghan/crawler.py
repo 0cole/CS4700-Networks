@@ -22,7 +22,7 @@ class MyHTMLParser(HTMLParser):
         if tag == 'a':
             # Extract href attribute
             for attr in attrs:
-                if attr[0] == 'href':
+                if attr[0] == 'href' and 'logout' not in attr[1]:
                     self.links.append(attr[1])
         elif tag == 'h3':
             for attr in attrs:
@@ -31,6 +31,8 @@ class MyHTMLParser(HTMLParser):
 
     def handle_data(self, data):
         if self.inside_flag and 'FLAG:' in data:
+            with open('out.txt', 'a') as f:
+                f.write(f'{data.strip()}\n')
             self.flags.append(data.strip())
 
     def handle_endtag(self, tag):
@@ -64,7 +66,7 @@ class Crawler:
         self.flags = []
 
     def create_connection(self):
-        context = ssl.create_default_context()
+        context = ssl._create_unverified_context()
         # If you encounter SSL certificate issues, uncomment the following lines
         # context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         # context.check_hostname = False
@@ -258,7 +260,8 @@ class Crawler:
         status_code = self.get_status_code(headers)
 
         # Debugging: Print status code and current path
-        print(f"Visited {path} with status code {status_code}", file=sys.stderr)
+        print(f"Visited {path} with status code {status_code}")
+        print(f'flags found so far: {len(self.flags)}')
 
         if status_code == 200:
             self.process_page(body)
