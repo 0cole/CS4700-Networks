@@ -23,9 +23,21 @@ class Crawler:
         if debug: print(f'======Response======\n{response.decode('ascii')}')
         return response.decode('ascii')
     
+    def verifyResponse(self, response):
+        status_line = response.splitlines()[0]
+
+        if status_line.startswith('HTTP'):
+            status_arr = status_line.split(' ')
+            return status_arr[1] == str(200)
+        return False
+
     def handshake(self, sock):
-        request = f"GET /accounts/login/ HTTP/1.1\r\nHost: {self.server}\r\n\r\n"
-        response = self.sendMessage(sock, request)
+        success = False
+        while not success:
+            request = f"GET /accounts/login/ HTTP/1.1\r\nHost: {self.server}\r\n\r\n"
+            response = self.sendMessage(sock, request)
+            if self.verifyResponse(response):
+                success = True
         
         # Grab csrf token
         lines = response.splitlines()
@@ -36,6 +48,8 @@ class Crawler:
                 break
 
     def login(self, sock):
+        success = False
+
         data = {'username': self.username,
                 'password': self.password,
                 'csrfmiddlewaretoken': self.csrf_token,
@@ -68,12 +82,12 @@ class Crawler:
             "Priority: u=0, i",
             "\r\n",
             encoded_data,
-
         ]
-
         request = '\r\n'.join(header)
-
-        self.sendMessage(sock, request, debug=True)
+        while not success:
+            response = self.sendMessage(sock, request, debug=True)
+            if self.verifyResponse(response):
+                success = True
 
     def run(self):
         print(f'Connecting to {self.server}:{self.port}')
