@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+
+import argparse
+import socket
+import urllib.parse
+import ssl
+
+DEFAULT_SERVER = "fakebook.khoury.northeastern.edu"
+DEFAULT_PORT = 443
+
+class Crawler:
+    def __init__(self, args):
+        self.server = args.server
+        self.port = args.port
+        self.username = args.username
+        self.password = args.password
+        self.csrf_token = None
+
+    def sendMessage(self, sock, request, debug = False):
+        if debug: print(f'======Request======\n{request}\n')
+        sock.send(request.encode('ascii'))
+        response = sock.recv(4096)
+        if debug: print(f'======Response======\n{response.decode('ascii')}')
+        return response.decode('ascii')
+    
+    def handshake(self, sock):
+        request = f"GET /accounts/login/ HTTP/1.1\r\nHost: {self.server}\r\n\r\n"
+        response = self.sendMessage(sock, request)
+        
+        # Grab csrf token
+        lines = response.splitlines()
+        for line in lines:
+            if 'csrfmiddlewaretoken' in line:
+                csrf_token = line.split('value="')[1][:-2]
+                self.csrf_token = csrf_token
+                break
+
+    def login(self, sock):
+        data = {'username': self.username,
+                'password': self.password,
+                'csrfmiddlewaretoken': self.csrf_token,
+                'next': '/fakebook/'}
+        
+        encoded_data = urllib.parse.urlencode(data)
+
+        header = [
+            "POST /accounts/login/ HTTP/1.1",
+            f"Host: {self.server}",
+            "Cookie: csrftoken=0f6wLSqQgb8UcPewMXDYDAkO0WRwE9XF",
+            "Connection: Keep-Alive",
+            f"Content-Length: {len(encoded_data)}",
+            "Cache-Control: max-age=0",
+            'Sec-Ch-Ua: "Chromium";v="129", "Not=A?Brand";v="8"',
+            "Sec-Ch-Ua-Mobile: ?0",
+            'Sec-Ch-Ua-Platform: "macOS"',
+            "Accept-Language: en-US,en;q=0.9",
+            "Origin: https://fakebook.khoury.northeastern.edu",
+            "Content-Type: application/x-www-form-urlencoded",
+            "Upgrade-Insecure-Requests: 1",
+            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.6668.71 Safari/537.36",
+            "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Sec-Fetch-Site: same-origin",
+            "Sec-Fetch-Mode: navigate",
+            "Sec-Fetch-User: ?1",
+            "Sec-Fetch-Dest: document",
+            "Referer: https://fakebook.khoury.northeastern.edu/accounts/login/",
+            # "Accept-Encoding: gzip, deflate, br",
+            "Priority: u=0, i",
+            "\r\n",
+            encoded_data,
+
+        ]
+
+        request = '\r\n'.join(header)
+
+        self.sendMessage(sock, request, debug=True)
+
+    def run(self):
+        print(f'Connecting to {self.server}:{self.port}')
+        no_ssl_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        context = ssl._create_unverified_context()
+        # Wrap with ssl
+        ssl_sock = context.wrap_socket(no_ssl_sock, server_hostname=self.server)
+        ssl_sock.connect((self.server, self.port))
+        
+        while not self.csrf_token:
+            self.handshake(ssl_sock)
+
+        print(f'Grabbed csrf_token: {self.csrf_token}')
+
+        self.login(ssl_sock)
+
+        ssl_sock.close()
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description='crawl Fakebook')
+    parser.add_argument('-s', dest="server", type=str, default=DEFAULT_SERVER, help="The server to crawl")
+    parser.add_argument('-p', dest="port", type=int, default=DEFAULT_PORT, help="The port to use")
+    parser.add_argument('username', type=str, help="The username to use")
+    parser.add_argument('password', type=str, help="The password to use")
+    args = parser.parse_args()
+    sender = Crawler(args)
+    sender.run()
