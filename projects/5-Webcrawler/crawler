@@ -2,11 +2,56 @@
 
 import argparse
 import socket
-import urllib.parse
 import ssl
+import urllib.parse
+from html.parser import HTMLParser
+import sys
+import time
 
 DEFAULT_SERVER = "fakebook.khoury.northeastern.edu"
 DEFAULT_PORT = 443
+DEBUG = False
+OUTPUT_FILE = './secret_flags'
+
+class Parser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.flags = []
+        self.links = []
+        self.inside_flag = False
+
+    def handle_starttag(self, tag, attrs):
+        """
+        Parse at every possible link in the page and also check
+        if the page contains any secret flags
+        """
+        if tag == 'a':
+            for attr in attrs:
+                if attr[0] == 'href' and 'logout' not in attr[1]:
+                    self.links.append(attr[1])
+        elif tag == 'h3':
+            for attr in attrs:
+                if attr[0] == 'class' and 'secret_flag' in attr[1]:
+                    self.inside_flag = True
+
+    def handle_data(self, data):
+        if self.inside_flag and 'FLAG:' in data:
+            # found the flag!
+            self.flags.append(data.strip())
+
+class CSRFTokenParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.csrf_token = None
+        self.next_value = ''
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == 'input':
+            if attrs.get('name') == 'csrfmiddlewaretoken':
+                self.csrf_token = attrs.get('value')
+            elif attrs.get('name') == 'next':
+                self.next_value = attrs.get('value', '')
 
 class Crawler:
     def __init__(self, args):
@@ -14,105 +59,283 @@ class Crawler:
         self.port = args.port
         self.username = args.username
         self.password = args.password
-        self.csrf_token = None
 
-    def sendMessage(self, sock, request, debug = False):
-        if debug: print(f'======Request======\n{request}\n')
-        sock.send(request.encode('ascii'))
-        response = sock.recv(4096)
-        if debug: print(f'======Response======\n{response.decode('ascii')}')
-        return response.decode('ascii')
-    
-    def verifyResponse(self, response):
-        status_line = response.splitlines()[0]
+        self.cookies = {}
+        self.visited = set()
+        self.to_visit = []
+        self.flags = []
 
-        if status_line.startswith('HTTP'):
-            status_arr = status_line.split(' ')
-            return status_arr[1] == str(200)
-        return False
+    def create_connection(self):
+        context = ssl._create_unverified_context()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        conn = context.wrap_socket(sock, server_hostname=self.server)
+        conn.connect((self.server, self.port))
+        return conn
 
-    def handshake(self, sock):
-        success = False
-        while not success:
-            request = f"GET /accounts/login/ HTTP/1.1\r\nHost: {self.server}\r\n\r\n"
-            response = self.sendMessage(sock, request)
-            if self.verifyResponse(response):
-                success = True
-        
-        # Grab csrf token
-        lines = response.splitlines()
-        for line in lines:
-            if 'csrfmiddlewaretoken' in line:
-                csrf_token = line.split('value="')[1][:-2]
-                self.csrf_token = csrf_token
+    def send_request(self, conn, request):
+        conn.sendall(request.encode('utf-8'))
+
+    def receive_response(self, conn):
+        response = b''
+        while True:
+            data = conn.recv(4096)
+            if not data:
                 break
+            response += data
+        return response.decode('utf-8', errors='ignore')
 
-    def login(self, sock):
-        success = False
+    def get_csrf_token(self):
+        path = '/accounts/login/?next=/fakebook/'
+        conn = self.create_connection()
+        request = f"GET {path} HTTP/1.1\r\n"
+        request += f"Host: {self.server}\r\n"
+        request += "User-Agent: CustomCrawler/1.0\r\n"
+        request += "Accept: text/html\r\n"
+        request += "Connection: close\r\n"
+        request += f"Referer: https://{self.server}{path}\r\n"
+        request += "Accept-Language: en-US,en;q=0.5\r\n\r\n"
 
-        data = {'username': self.username,
-                'password': self.password,
-                'csrfmiddlewaretoken': self.csrf_token,
-                'next': '/fakebook/'}
-        
-        encoded_data = urllib.parse.urlencode(data)
+        self.send_request(conn, request)
+        response = self.receive_response(conn)
+        conn.close()
 
-        header = [
-            "POST /accounts/login/ HTTP/1.1",
-            f"Host: {self.server}",
-            "Cookie: csrftoken=0f6wLSqQgb8UcPewMXDYDAkO0WRwE9XF",
-            "Connection: Keep-Alive",
-            f"Content-Length: {len(encoded_data)}",
-            "Cache-Control: max-age=0",
-            'Sec-Ch-Ua: "Chromium";v="129", "Not=A?Brand";v="8"',
-            "Sec-Ch-Ua-Mobile: ?0",
-            'Sec-Ch-Ua-Platform: "macOS"',
-            "Accept-Language: en-US,en;q=0.9",
-            "Origin: https://fakebook.khoury.northeastern.edu",
-            "Content-Type: application/x-www-form-urlencoded",
-            "Upgrade-Insecure-Requests: 1",
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.6668.71 Safari/537.36",
-            "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Sec-Fetch-Site: same-origin",
-            "Sec-Fetch-Mode: navigate",
-            "Sec-Fetch-User: ?1",
-            "Sec-Fetch-Dest: document",
-            "Referer: https://fakebook.khoury.northeastern.edu/accounts/login/",
-            # "Accept-Encoding: gzip, deflate, br",
-            "Priority: u=0, i",
-            "\r\n",
-            encoded_data,
-        ]
-        request = '\r\n'.join(header)
-        while not success:
-            response = self.sendMessage(sock, request, debug=True)
-            if self.verifyResponse(response):
-                success = True
+        headers, body = response.split('\r\n\r\n', 1)
+
+        if DEBUG: print(f"response Headers from get request:\n {headers}")
+
+        self.parse_cookies(headers)
+
+        if DEBUG: print(f"cookies after GET request: {self.cookies}")
+        if DEBUG: print(f"login page html:\n{body}")
+
+        csrf_token, next_value = self.extract_csrf_token(body)
+        self.cookies['csrftoken'] = csrf_token
+
+        return csrf_token, next_value
+
+
+    def extract_csrf_token(self, html):
+        """
+        Call the csrf HTML parser to find the csrf token
+        """
+        parser = CSRFTokenParser()
+        parser.feed(html)
+        if DEBUG: print(f"new CSRF token: {parser.csrf_token}")
+        if DEBUG: print(f"new next value: {parser.next_value}")
+        return parser.csrf_token, parser.next_value
+
+    def login(self):
+        """
+        Login to fakebook and determine which page to go to next
+        """
+        csrf_token, next_value = self.get_csrf_token()
+
+        if DEBUG: print(f"Cookies before POST request: {self.cookies}")
+
+        path = '/accounts/login/'
+        conn = self.create_connection()
+
+        post_data = {
+            'username': self.username,
+            'password': self.password,
+            'csrfmiddlewaretoken': csrf_token,
+            'next': next_value
+        }
+
+        post_data_encoded = urllib.parse.urlencode(post_data)
+
+        request = f"POST {path} HTTP/1.1\r\n"
+        request += f"Host: {self.server}\r\n"
+        request += "User-Agent: CustomCrawler/1.0\r\n"
+        request += "Accept: text/html\r\n"
+        request += "Connection: close\r\n"
+        request += "Content-Type: application/x-www-form-urlencoded\r\n"
+        request += f"Content-Length: {len(post_data_encoded)}\r\n"
+        request += f"Referer: https://{self.server}/accounts/login/?next=/fakebook/\r\n"
+
+        if self.cookies:
+            cookie_header = 'Cookie: ' + '; '.join([f"{key}={value}" for key, value in self.cookies.items()])
+            request += f"{cookie_header}\r\n"
+        request += "\r\n"
+        request += post_data_encoded
+
+        if DEBUG: print(f"login request:\n{request}")
+
+        # Send login request
+        self.send_request(conn, request)
+        response = self.receive_response(conn)
+        conn.close()
+
+        headers, body = response.split('\r\n\r\n', 1)
+        self.parse_cookies(headers)
+
+        if DEBUG: print(f"response headers from POST request\n{headers}")
+
+        if DEBUG: print(f"response body from POST request:{body}")
+
+        # get status code\next location after logging in
+        status_code = self.get_status_code(headers)
+        new_location = self.get_location(headers)
+
+        # in the case of a 302 found status
+        if status_code == 302 and new_location:
+            # assume login is successful if redirected to the 'next' page
+            if new_location == next_value:
+                print("successful login")
+                self.to_visit.append(new_location)
+            else:
+                print("something went wrong with the next location after logging in.")
+                sys.exit(1)
+        else:
+            print("login failde")
+            sys.exit(1)
+
+    def parse_cookies(self, headers):
+        """
+        Retrieve all the cookies from the headers and store it in cookies[]
+        """
+        lines = headers.split('\r\n')
+        for line in lines:
+            if line.lower().startswith('set-cookie:'):
+                cookie_line = line[len('Set-Cookie:'):].strip()
+                # get the name/value of the cookie
+                if ';' in cookie_line:
+                    cookie_parts = cookie_line.split(';')
+                    cookie_name_value = cookie_parts[0]
+                    if '=' in cookie_name_value:
+                        key, value = cookie_name_value.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        self.cookies[key] = value
+                else:
+                    if '=' in cookie_line:
+                        key, value = cookie_line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        self.cookies[key] = value
+
+    def crawl(self):
+        """
+        Controls the crawling and continues until all 5 flags are found
+        """
+        while self.to_visit and len(self.flags) < 5:
+            current_path = self.to_visit.pop(0)
+            if current_path in self.visited:
+                continue
+            self.visited.add(current_path)
+            self.visit_page(current_path)
+
+    def visit_page(self, path):
+        """
+        Send a request to load a profile page and parse the response
+        """
+        conn = self.create_connection()
+        request = f"GET {path} HTTP/1.1\r\n"
+        request += f"Host: {self.server}\r\n"
+        request += "User-Agent: CustomCrawler/1.0\r\n"
+        request += "Accept: text/html\r\n"
+        request += "Connection: close\r\n"
+        # add all cookies to request header
+        if self.cookies:
+            cookie_header = 'Cookie: ' + '; '.join([f"{key}={value}" for key, value in self.cookies.items()])
+            request += f"{cookie_header}\r\n"
+        request += "\r\n"
+
+        self.send_request(conn, request)
+        response = self.receive_response(conn)
+        conn.close()
+
+        # parse the response
+        headers, body = response.split('\r\n\r\n', 1)
+        status_code = self.get_status_code(headers)
+
+        # current page and number of flags found so far
+        if DEBUG: print(f"Visited {path} with status code {status_code}")
+        if DEBUG: print(f'flags found so far: {len(self.flags)}')
+
+        if status_code == 200:
+            self.process_page(body)
+        elif status_code == 302:
+            # success
+            new_location = self.get_location(headers)
+            if new_location and new_location not in self.visited:
+                self.to_visit.append(new_location)
+        elif status_code == 403 or status_code == 404:
+            # skiop
+            pass
+        elif status_code == 503:
+            # retry
+            time.sleep(1)
+            self.to_visit.append(path)
+        else:
+            print("Encountered unknown status code")
+            pass
+
+    def get_status_code(self, headers):
+        status_line = headers.split('\r\n')[0]
+        parts = status_line.split(' ')
+        if len(parts) >= 2:
+            return int(parts[1])
+        return None
+
+    def get_location(self, headers):
+        """
+        Parse the next location on fakeboook from a request header
+        """
+        for line in headers.split('\r\n'):
+            if line.lower().startswith('location:'):
+                location = line[len('Location:'):].strip()
+                # handle potential case differences in 'Location'
+                location = line[line.find(':')+1:].strip()
+                parsed_url = urllib.parse.urlparse(location)
+                # handle absolute and relative URLs
+                if parsed_url.netloc == '':
+                    return parsed_url.path
+                elif parsed_url.netloc == self.server:
+                    return parsed_url.path
+                else:
+                    return None
+        return None
+
+    def process_page(self, html):
+        """
+        Parse a given profile page, check if there are any new flags and
+        check for any friend profiles that have not yet been visited.
+        """
+        parser = Parser()
+        parser.feed(html)
+        # Check if any flags need to be added
+        for flag in parser.flags:
+            if flag not in self.flags:
+                self.flags.append(flag)
+                print(f"Found a flag! Updating {OUTPUT_FILE} with {flag}")
+                with open(OUTPUT_FILE, 'a') as f:
+                    f.write(f'{flag.split('FLAG: ')[1]}\n')
+
+                if len(self.flags) == 5:
+                    sys.exit(0)
+        # add any newly encountered links to other profiles
+        for link in parser.links:
+            full_url = urllib.parse.urljoin(f'https://{self.server}', link)
+            parsed_url = urllib.parse.urlparse(full_url)
+            if parsed_url.netloc == self.server:
+                path = parsed_url.path
+                if path not in self.visited and path not in self.to_visit:
+                    self.to_visit.append(path)
 
     def run(self):
-        print(f'Connecting to {self.server}:{self.port}')
-        no_ssl_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        context = ssl._create_unverified_context()
-        # Wrap with ssl
-        ssl_sock = context.wrap_socket(no_ssl_sock, server_hostname=self.server)
-        ssl_sock.connect((self.server, self.port))
-        
-        while not self.csrf_token:
-            self.handshake(ssl_sock)
-
-        print(f'Grabbed csrf_token: {self.csrf_token}')
-
-        self.login(ssl_sock)
-
-        ssl_sock.close()
+        """
+        Start the program by logging in then run the crawler
+        """
+        self.login()
+        self.crawl()
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser(description='crawl Fakebook')
     parser.add_argument('-s', dest="server", type=str, default=DEFAULT_SERVER, help="The server to crawl")
     parser.add_argument('-p', dest="port", type=int, default=DEFAULT_PORT, help="The port to use")
     parser.add_argument('username', type=str, help="The username to use")
     parser.add_argument('password', type=str, help="The password to use")
     args = parser.parse_args()
-    sender = Crawler(args)
-    sender.run()
+    crawler = Crawler(args)
+    crawler.run()
