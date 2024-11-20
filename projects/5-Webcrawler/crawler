@@ -181,13 +181,13 @@ class Crawler:
         if status_code == 302 and new_location:
             # assume login is successful if redirected to the 'next' page
             if new_location == next_value:
-                print("successful login")
+                if DEBUG: print("successful login")
                 self.to_visit.append(new_location)
             else:
-                print("something went wrong with the next location after logging in.")
+                if DEBUG: print("something went wrong with the next location after logging in.")
                 sys.exit(1)
         else:
-            print("login failde")
+            if DEBUG: print("login failde")
             sys.exit(1)
 
     def parse_cookies(self, headers):
@@ -308,9 +308,11 @@ class Crawler:
         for flag in parser.flags:
             if flag not in self.flags:
                 self.flags.append(flag)
-                print(f"Found a flag! Updating {OUTPUT_FILE} with {flag}")
-                with open(OUTPUT_FILE, 'a') as f:
-                    f.write(f'{flag.split('FLAG: ')[1]}\n')
+                if DEBUG: print(f"Found a flag! Updating {OUTPUT_FILE} with {flag}")
+                print(flag.split('FLAG: ')[1])
+                if DEBUG:
+                    with open(OUTPUT_FILE, 'a') as f:
+                        f.write(f'{flag.split('FLAG: ')[1]}\n')
 
                 if len(self.flags) == 5:
                     sys.exit(0)
