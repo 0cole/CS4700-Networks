@@ -1,7 +1,7 @@
 #!/usr/bin/env -S python3 -u
 
 import argparse, socket, time, json, select, struct, sys, math
-from dnslib import DNSRecord, DNSHeader, RR, QTYPE, A, MX, CNAME, NS
+from dnslib import DNSRecord, DNSHeader, RR, QTYPE, A, MX, CNAME, NS, TXT
 
 DEBUG = True
 
@@ -84,10 +84,13 @@ class Server:
                     else:
                         if DEBUG: self.printToFile(f'could not find any recursive records  for {address}')
             elif data[0] == 'MX':
-                self.printToFile(valid_addrs)
                 for address in valid_addrs:
                     priority, domain = address.split(' ', 1)
                     response.add_answer(RR(name, QTYPE.MX, rdata=MX(domain, int(priority)), ttl=ttl))
+            elif data[0] == 'TXT':
+                for text in valid_addrs:
+                    text = str(text).replace('"', '') # weird issue where text wasnt orignally a string but was surrounded by quotations
+                    response.add_answer(RR(name, QTYPE.TXT, rdata=TXT(text), ttl=ttl))
             elif data[0] == 'NS':
                 for nameserver in valid_addrs:
                     response.add_answer(RR(name, QTYPE.NS, rdata=NS(nameserver), ttl=ttl))
@@ -135,8 +138,6 @@ class Server:
         q = q.strip()
         arr = q.split()
 
-        self.printToFile(arr)
-
         if len(arr) == 4:
             name, ttl, r_type, qtype = arr
         elif len(arr) == 3:
@@ -172,6 +173,10 @@ class Server:
                         if record.rtype == QTYPE.NS:
                             if DEBUG: self.printToFile(f'found nameserver corresponding to {name}: {record.rdata}')
                             addrs.append(str(record.rdata))
+                    case 'TXT':
+                        if record.rtype == QTYPE.TXT:
+                            if DEBUG: self.printToFile(f'found TXT corresponding to {name}: {record.rdata}')
+                            addrs.append(record.rdata)
                     case _:
                         # default
                         if DEBUG: self.printToFile(f'Unknown record type in request: {qtype}. Quitting...')
@@ -191,6 +196,7 @@ class Server:
         return
 
 if __name__ == "__main__":
+
     parser = argparse.ArgumentParser(description='send data')
     parser.add_argument('root_ip', type=str, help="The IP address of the root server")
     parser.add_argument('zone', type=str, help="The zone file for this server")
