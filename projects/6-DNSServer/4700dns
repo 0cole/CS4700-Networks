@@ -102,18 +102,24 @@ class Server:
             ttl = None # maybe we need to consider this later
         
         name = name[1:]
-        return_type = None
-        code = self.getCode(value)
+        return_code = self.getCode(value)
 
-        if value == 'A' or value == 'MX':
+        if value == 'A':
             addrs = [] # valid addresses
             if DEBUG: self.printToFile(f'looking for corresponding addresses for {name} in our records')
             for record in self.records:
                 if name == record.get_rname():
-                    return_type = record.rtype
-                    self.printToFile(return_type)
                     if DEBUG: self.printToFile(f'found address corresponding to {name}: {record.rdata}')
                     addrs.append(str(record.rdata))
+            return (value, name, ttl, addrs)
+        elif value == 'MX':
+            addrs = [] # valid addresses
+            if DEBUG: self.printToFile(f'looking for corresponding email for {name} in our records')
+            for record in self.records:
+                if name == record.get_rname():
+                    if return_code == record.rtype:
+                        if DEBUG: self.printToFile(f'found email corresponding to {name}: {record.rdata}')
+                        addrs.append(str(record.rdata))
             return (value, name, ttl, addrs)
 
     def run(self):
