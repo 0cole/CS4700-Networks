@@ -1,12 +1,10 @@
 #!/usr/bin/env -S python3 -u
 
 import argparse, socket, time, json, select, struct, sys, math
-from dnslib import DNSRecord, DNSHeader, RR, QTYPE, A, MX
+from dnslib import DNSRecord, DNSHeader, RR, QTYPE, A, MX, CNAME
 
 DEBUG = True
 
-A_CODE = 2
-MX_CODE = 15
 
 class Server:
     def __init__(self, root_ip, domain, port):
@@ -22,11 +20,6 @@ class Server:
 
         self.log("Bound to port %d" % self.port)
     
-    def getCode(self, value):
-        if value == 'A':
-            return 2
-        if value == 'MX':
-            return 15
 
     def log(self, message):
         sys.stderr.write(message + "\n")
@@ -56,6 +49,11 @@ class Server:
         
         if data:
             response = request.reply()
+            
+            # add ns recordds to the AUTHORITY section
+            for record in self.records:
+                if record.rtype == QTYPE.NS and str(record.rname) == self.domain:
+                    response.add_auth(RR(record.rname, QTYPE.NS, rdata=record.rdata, ttl=record.ttl))
 
             if data[0] == 'A': # ('A', name, ttl, addrs)
                 name = data[1]
@@ -63,6 +61,12 @@ class Server:
                 valid_addrs = data[3]
                 for address in valid_addrs:
                     response.add_answer(RR(name, QTYPE.A, rdata=A(address), ttl=ttl))  
+            if data[0] == 'CNAME':
+                name = data[1]
+                ttl = data[2] if data[2] else 60
+                valid_addrs = data[3]
+                for address in valid_addrs:
+                    response.add_answer(RR(name, QTYPE.A, rdata=CNAME(address), ttl=ttl))  
             elif data[0] == 'MX':
                 name = data[1]
                 ttl = data[2] if data[2] else 60
@@ -102,7 +106,6 @@ class Server:
             ttl = None # maybe we need to consider this later
         
         name = name[1:]
-        return_code = self.getCode(value)
 
         if value == 'A':
             addrs = [] # valid addresses
@@ -113,13 +116,14 @@ class Server:
                     addrs.append(str(record.rdata))
             return (value, name, ttl, addrs)
         elif value == 'MX':
-            addrs = [] # valid addresses
+            addrs = [] # valid emails
             if DEBUG: self.printToFile(f'looking for corresponding email for {name} in our records')
             for record in self.records:
                 if name == record.get_rname():
-                    if return_code == record.rtype:
+                    if record.rtype == QTYPE.MX:
                         if DEBUG: self.printToFile(f'found email corresponding to {name}: {record.rdata}')
-                        addrs.append(str(record.rdata))
+                        adjusted_address = str(record.rdata).split(' ')[1]
+                        addrs.append(adjusted_address)
             return (value, name, ttl, addrs)
 
     def run(self):
