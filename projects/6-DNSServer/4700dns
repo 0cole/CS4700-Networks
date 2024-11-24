@@ -84,6 +84,7 @@ class Server:
                     else:
                         if DEBUG: self.printToFile(f'could not find any recursive records  for {address}')
             elif data[0] == 'MX':
+                self.printToFile(valid_addrs)
                 for address in valid_addrs:
                     priority, domain = address.split(' ', 1)
                     response.add_answer(RR(name, QTYPE.MX, rdata=MX(domain, int(priority)), ttl=ttl))
@@ -151,37 +152,32 @@ class Server:
         return_value = None
         addrs = []
 
-        if qtype == 'A' or qtype == 'CNAME':
-            for record in self.records:
-                if name == record.get_rname():
-                    if record.rtype == QTYPE.CNAME:
-                        if DEBUG: self.printToFile(f'Found CNAME for {name}: {record.rdata}')
-                        addrs.append(str(record.rdata))
-                        return_value = 'CNAME'
-                    elif record.rtype == QTYPE.A:
-                        if DEBUG: self.printToFile(f'Found A record for {name}: {record.rdata}')
-                        addrs.append(str(record.rdata))
-                        return_value = 'A'
-        elif qtype == 'MX':
-            if DEBUG: self.printToFile(f'looking for corresponding email for {name} in our records')
-            return_value = qtype
-            for record in self.records:
-                if name == record.get_rname():
-                    if record.rtype == QTYPE.MX:
-                        if DEBUG: self.printToFile(f'found email corresponding to {name}: {record.rdata}')
-                        addrs.append(str(record.rdata))
-        elif qtype == 'NS':
-            if DEBUG: self.printToFile(f'looking for corresponding nameserver for {name} in our records')
-            return_value = qtype
-            for record in self.records:
-                if name == record.get_rname():
-                    if record.rtype == QTYPE.NS:
-                        if DEBUG: self.printToFile(f'found nameserver corresponding to {name}: {record.rdata}')
-                        addrs.append(str(record.rdata))
-        
+        for record in self.records:
+            if name == record.get_rname():
+                match qtype:
+                    case 'A' | 'CNAME':
+                        if record.rtype == QTYPE.CNAME:
+                            if DEBUG: self.printToFile(f'Found CNAME for {name}: {record.rdata}')
+                            addrs.append(str(record.rdata))
+                            return_value = 'CNAME'
+                        if record.rtype == QTYPE.A:
+                            if DEBUG: self.printToFile(f'Found A record for {name}: {record.rdata}')
+                            addrs.append(str(record.rdata))
+                            return_value = 'A'
+                    case 'MX':
+                        if record.rtype == QTYPE.MX:
+                            if DEBUG: self.printToFile(f'found email corresponding to {name}: {record.rdata}')
+                            addrs.append(str(record.rdata))
+                    case 'NS':
+                        if record.rtype == QTYPE.NS:
+                            if DEBUG: self.printToFile(f'found nameserver corresponding to {name}: {record.rdata}')
+                            addrs.append(str(record.rdata))
+                    case _:
+                        # default
+                        if DEBUG: self.printToFile(f'Unknown record type in request: {qtype}. Quitting...')
         if return_value:
             return (return_value, name, ttl, addrs)
-        return None
+        return (qtype, name, ttl, addrs)
 
     def run(self):
         self.records = self.parseZoneFile(args.zone)
