@@ -10,7 +10,7 @@ class Server:
     def __init__(self, root_ip, domain, port):
         self.root_ip = root_ip
         self.domain = domain
-        self.records = {}
+        self.records = []
 
         if DEBUG: self.printToFile(f'==== OUR ROOT IP: {root_ip} =====')
 
@@ -57,22 +57,37 @@ class Server:
 
             if data[0] == 'A': # ('A', name, ttl, addrs)
                 name = data[1]
-                ttl = data[2] if data[2] else 60
+                ttl = data[2] if data[2] else 5
                 valid_addrs = data[3]
                 for address in valid_addrs:
                     response.add_answer(RR(name, QTYPE.A, rdata=A(address), ttl=ttl))  
             if data[0] == 'CNAME':
                 name = data[1]
-                ttl = data[2] if data[2] else 60
+                ttl = data[2] if data[2] else 5
                 valid_addrs = data[3]
                 for address in valid_addrs:
-                    response.add_answer(RR(name, QTYPE.A, rdata=CNAME(address), ttl=ttl))  
+                    response.add_answer(RR(name, QTYPE.CNAME, rdata=CNAME(address), ttl=ttl))
+                
+                if DEBUG:
+                    self.printToFile(f'==== FOUND A CNAME FILE, RECURSIVELY SEARCHING FOR \'A\' RECORD ====')
+
+                # recursively search for A records
+                for cname_addr in valid_addrs:
+                    recursive_data = self.handleRequest(f" {cname_addr} A", recursive=False)
+                    if recursive_data and recursive_data[0] == 'A':
+                        cname_name = recursive_data[1]
+                        cname_ttl = recursive_data[2] if recursive_data[2] else 5
+                        cname_addrs = recursive_data[3]
+                        for cname_addr in cname_addrs:
+                            response.add_answer(RR(cname_name, QTYPE.A, rdata=A(cname_addr), ttl=cname_ttl))
+
             elif data[0] == 'MX':
                 name = data[1]
-                ttl = data[2] if data[2] else 60
+                ttl = data[2] if data[2] else 5
                 valid_addrs = data[3]
                 for address in valid_addrs:
-                    response.add_answer(RR(name, QTYPE.MX, rdata=MX(address), ttl=ttl))  
+                    priority, domain = address.split(' ', 1)
+                    response.add_answer(RR(name, QTYPE.MX, rdata=MX(domain, int(priority)), ttl=ttl))  
         else:
             # handle if there is no valid response
             pass
@@ -94,37 +109,56 @@ class Server:
 
         return records
 
-    def handleRequest(self, q):
+    def handleRequest(self, q, recursive=False):
         if DEBUG: self.printToFile(f'==== HANDLING REQUEST: {q} ====')
         q = q.strip()
         arr = q.split()
 
-        if len(arr) == 4:
-            name, ttl, r_type, value = arr
-        elif len(arr) == 3:
-            name, r_type, value = arr
-            ttl = None # maybe we need to consider this later
-        
-        name = name[1:]
+        self.printToFile(arr)
 
-        if value == 'A':
-            addrs = [] # valid addresses
-            if DEBUG: self.printToFile(f'looking for corresponding addresses for {name} in our records')
+        if len(arr) == 4:
+            name, ttl, r_type, qtype = arr
+        elif len(arr) == 3:
+            name, r_type, qtype = arr
+            ttl = None # maybe we need to consider this later
+        elif len(arr) == 2:
+            name, qtype = arr
+            ttl = None
+        
+        if name.startswith(';'): 
+            name = name[1:]
+
+        return_value = None
+        addrs = []
+
+        if qtype == 'A' or qtype == 'CNAME':
             for record in self.records:
                 if name == record.get_rname():
-                    if DEBUG: self.printToFile(f'found address corresponding to {name}: {record.rdata}')
-                    addrs.append(str(record.rdata))
-            return (value, name, ttl, addrs)
-        elif value == 'MX':
-            addrs = [] # valid emails
+                    if record.rtype == QTYPE.CNAME:
+                        if DEBUG: self.printToFile(f'Found CNAME for {name}: {record.rdata}')
+                        addrs.append(str(record.rdata))
+                        return_value = 'CNAME'
+                        # if recursive:
+                        #     next_q = f" {record.rdata} A"
+                        #     cname_response = self.handleRequest(next_q, recursive=False)
+                        #     if cname_response and cname_response[0] == 'A':
+                        #         addrs.extend(cname_response[3])  
+                    elif record.rtype == QTYPE.A:
+                        if DEBUG: self.printToFile(f'Found A record for {name}: {record.rdata}')
+                        addrs.append(str(record.rdata))
+                        return_value = 'A'
+        elif qtype == 'MX':
             if DEBUG: self.printToFile(f'looking for corresponding email for {name} in our records')
+            return_value = 'MX'
             for record in self.records:
                 if name == record.get_rname():
                     if record.rtype == QTYPE.MX:
                         if DEBUG: self.printToFile(f'found email corresponding to {name}: {record.rdata}')
-                        adjusted_address = str(record.rdata).split(' ')[1]
-                        addrs.append(adjusted_address)
-            return (value, name, ttl, addrs)
+                        addrs.append(str(record.rdata))
+        
+        if return_value:
+            return (return_value, name, ttl, addrs)
+        return None
 
     def run(self):
         self.records = self.parseZoneFile(args.zone)
