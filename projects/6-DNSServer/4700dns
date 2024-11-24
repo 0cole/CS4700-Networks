@@ -50,71 +50,48 @@ class Server:
         if data:
             response = request.reply()
             name = data[1]
-            ttl = data[2] if data[2] else 5
-            valid_addrs = data[3] 
+            ttl = data[2]
+            valid_addrs = data[3]
+            recursive = False
             
-            # add ns recordds to the AUTHORITY section
+            # add ns recordds to the AUTHORITY section if the request doesnt directly ask for NS
             if data[0] != 'NS':
                 for record in self.records:
                     if record.rtype == QTYPE.NS and str(record.rname) == self.domain:
                         response.add_auth(RR(record.rname, QTYPE.NS, rdata=record.rdata, ttl=record.ttl))
 
-            if data[0] == 'A': # ('A', name, ttl, addrs)
-                for address in valid_addrs:
-                    response.add_answer(RR(name, QTYPE.A, rdata=A(address), ttl=ttl))  
-            elif data[0] == 'CNAME':
-                for address in valid_addrs:
-                    response.add_answer(RR(name, QTYPE.CNAME, rdata=CNAME(address), ttl=ttl))
+            for address in valid_addrs:
+                match data[0]:
+                    case 'A':
+                        response.add_answer(RR(name, QTYPE.A, rdata=A(address), ttl=ttl))
+                    case 'CNAME':
+                        recursive = True
+                        response.add_answer(RR(name, QTYPE.CNAME, rdata=CNAME(address), ttl=ttl))
+                    case 'MX':
+                        priority, domain = address.split(' ', 1)
+                        response.add_answer(RR(name, QTYPE.MX, rdata=MX(domain, int(priority)), ttl=ttl))
+                    case 'NS':
+                        recursive = True
+                        response.add_answer(RR(name, QTYPE.NS, rdata=NS(address), ttl=ttl))
+                    case 'TXT':
+                        text = str(address).replace('"', '') # weird issue where address wasnt orignally a string but was surrounded by quotations
+                        response.add_answer(RR(name, QTYPE.TXT, rdata=TXT(text), ttl=ttl))
+                    case _:
+                        if DEBUG: self.printToFile('UNKNOWN REQUEST ENCOUNTERED. QUITTING...')
+                        return
 
-                    if DEBUG:
-                        self.printToFile(f'==== FOUND A CNAME FILE, RECURSIVELY SEARCHING FOR \'A\' RECORD ====')
-
-                    # recursively search for A records
+                if recursive:
                     recursive_data = self.handleRequest(f' {address} A')
                     if recursive_data:
                         if recursive_data[0] == 'A':
-                            cname_name = recursive_data[1]
-                            cname_ttl = recursive_data[2] if recursive_data[2] else 5
-                            cname_addrs = recursive_data[3]
-                            for address in cname_addrs:
-                                response.add_answer(RR(cname_name, QTYPE.A, rdata=A(address), ttl=cname_ttl))
-                        else:
-                            # handle other types later maybe
-                            pass
-                    else:
-                        if DEBUG: self.printToFile(f'could not find any recursive records  for {address}')
-            elif data[0] == 'MX':
-                for address in valid_addrs:
-                    priority, domain = address.split(' ', 1)
-                    response.add_answer(RR(name, QTYPE.MX, rdata=MX(domain, int(priority)), ttl=ttl))
-            elif data[0] == 'TXT':
-                for text in valid_addrs:
-                    text = str(text).replace('"', '') # weird issue where text wasnt orignally a string but was surrounded by quotations
-                    response.add_answer(RR(name, QTYPE.TXT, rdata=TXT(text), ttl=ttl))
-            elif data[0] == 'NS':
-                for nameserver in valid_addrs:
-                    response.add_answer(RR(name, QTYPE.NS, rdata=NS(nameserver), ttl=ttl))
-
-                    if DEBUG:
-                        self.printToFile(f'==== FOUND A NAMESERVER FILE, RECURSIVELY SEARCHING FOR \'A\' RECORD ====')
-                    
-                    recursive_data = self.handleRequest(f' {nameserver} A')
-                    if recursive_data:
-                        if recursive_data[0] == 'A':
-                            ns_name = recursive_data[1]
-                            ns_ttl = recursive_data[2] if recursive_data[2] else 5
-                            ns_addrs = recursive_data[3]
-                            for address in ns_addrs:
-                                response.add_ar(RR(ns_name, QTYPE.A, rdata=A(address), ttl=ns_ttl))
-                        else:
-                            # handle other types later maybe
-                            pass
-                    else:
-                        if DEBUG: self.printToFile(f'could not find any recursive records  for {address}')
-        else:
-            print('UNKNOWN REQUEST ENCOUNTERED. QUITTING...')
-            if DEBUG: self.printToFile('UNKNOWN REQUEST ENCOUNTERED. QUITTING...')
-            return
+                            recursive_name = recursive_data[1]
+                            recursive_ttl = recursive_data[2] if recursive_data[2] else 5
+                            recursive_addrs = recursive_data[3]
+                            for recursive_addr in recursive_addrs:
+                                if data[0] == 'NS':
+                                    response.add_ar(RR(recursive_name, QTYPE.A, rdata=A(recursive_addr), ttl=recursive_ttl))
+                                else:
+                                    response.add_answer(RR(recursive_name, QTYPE.A, rdata=A(recursive_addr), ttl=recursive_ttl))
 
         self.send(addr, response)
 
@@ -142,10 +119,10 @@ class Server:
             name, ttl, r_type, qtype = arr
         elif len(arr) == 3:
             name, r_type, qtype = arr
-            ttl = None # maybe we need to consider this later
+            ttl = 5 # maybe we need to consider this later
         elif len(arr) == 2:
             name, qtype = arr
-            ttl = None
+            ttl = 5
         
         if name.startswith(';'): 
             name = name[1:]
