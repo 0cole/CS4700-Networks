@@ -1,7 +1,7 @@
 #!/usr/bin/env -S python3 -u
 
 import argparse, socket, time, json, select, struct, sys, math
-from dnslib import DNSRecord, DNSHeader, RR, QTYPE, A, MX, CNAME
+from dnslib import DNSRecord, DNSHeader, RR, QTYPE, A, MX, CNAME, NS
 
 DEBUG = True
 
@@ -49,48 +49,68 @@ class Server:
         
         if data:
             response = request.reply()
+            name = data[1]
+            ttl = data[2] if data[2] else 5
+            valid_addrs = data[3] 
             
             # add ns recordds to the AUTHORITY section
-            for record in self.records:
-                if record.rtype == QTYPE.NS and str(record.rname) == self.domain:
-                    response.add_auth(RR(record.rname, QTYPE.NS, rdata=record.rdata, ttl=record.ttl))
+            if data[0] != 'NS':
+                for record in self.records:
+                    if record.rtype == QTYPE.NS and str(record.rname) == self.domain:
+                        response.add_auth(RR(record.rname, QTYPE.NS, rdata=record.rdata, ttl=record.ttl))
 
             if data[0] == 'A': # ('A', name, ttl, addrs)
-                name = data[1]
-                ttl = data[2] if data[2] else 5
-                valid_addrs = data[3]
                 for address in valid_addrs:
                     response.add_answer(RR(name, QTYPE.A, rdata=A(address), ttl=ttl))  
-            if data[0] == 'CNAME':
-                name = data[1]
-                ttl = data[2] if data[2] else 5
-                valid_addrs = data[3]
+            elif data[0] == 'CNAME':
                 for address in valid_addrs:
                     response.add_answer(RR(name, QTYPE.CNAME, rdata=CNAME(address), ttl=ttl))
-                
-                if DEBUG:
-                    self.printToFile(f'==== FOUND A CNAME FILE, RECURSIVELY SEARCHING FOR \'A\' RECORD ====')
 
-                # recursively search for A records
-                for cname_addr in valid_addrs:
-                    recursive_data = self.handleRequest(f" {cname_addr} A", recursive=False)
-                    if recursive_data and recursive_data[0] == 'A':
-                        cname_name = recursive_data[1]
-                        cname_ttl = recursive_data[2] if recursive_data[2] else 5
-                        cname_addrs = recursive_data[3]
-                        for cname_addr in cname_addrs:
-                            response.add_answer(RR(cname_name, QTYPE.A, rdata=A(cname_addr), ttl=cname_ttl))
+                    if DEBUG:
+                        self.printToFile(f'==== FOUND A CNAME FILE, RECURSIVELY SEARCHING FOR \'A\' RECORD ====')
 
+                    # recursively search for A records
+                    recursive_data = self.handleRequest(f' {address} A')
+                    if recursive_data:
+                        if recursive_data[0] == 'A':
+                            cname_name = recursive_data[1]
+                            cname_ttl = recursive_data[2] if recursive_data[2] else 5
+                            cname_addrs = recursive_data[3]
+                            for address in cname_addrs:
+                                response.add_answer(RR(cname_name, QTYPE.A, rdata=A(address), ttl=cname_ttl))
+                        else:
+                            # handle other types later maybe
+                            pass
+                    else:
+                        if DEBUG: self.printToFile(f'could not find any recursive records  for {address}')
             elif data[0] == 'MX':
-                name = data[1]
-                ttl = data[2] if data[2] else 5
-                valid_addrs = data[3]
                 for address in valid_addrs:
                     priority, domain = address.split(' ', 1)
-                    response.add_answer(RR(name, QTYPE.MX, rdata=MX(domain, int(priority)), ttl=ttl))  
+                    response.add_answer(RR(name, QTYPE.MX, rdata=MX(domain, int(priority)), ttl=ttl))
+            elif data[0] == 'NS':
+                for nameserver in valid_addrs:
+                    response.add_answer(RR(name, QTYPE.NS, rdata=NS(nameserver), ttl=ttl))
+
+                    if DEBUG:
+                        self.printToFile(f'==== FOUND A NAMESERVER FILE, RECURSIVELY SEARCHING FOR \'A\' RECORD ====')
+                    
+                    recursive_data = self.handleRequest(f' {nameserver} A')
+                    if recursive_data:
+                        if recursive_data[0] == 'A':
+                            ns_name = recursive_data[1]
+                            ns_ttl = recursive_data[2] if recursive_data[2] else 5
+                            ns_addrs = recursive_data[3]
+                            for address in ns_addrs:
+                                response.add_ar(RR(ns_name, QTYPE.A, rdata=A(address), ttl=ns_ttl))
+                        else:
+                            # handle other types later maybe
+                            pass
+                    else:
+                        if DEBUG: self.printToFile(f'could not find any recursive records  for {address}')
         else:
-            # handle if there is no valid response
-            pass
+            print('UNKNOWN REQUEST ENCOUNTERED. QUITTING...')
+            if DEBUG: self.printToFile('UNKNOWN REQUEST ENCOUNTERED. QUITTING...')
+            return
 
         self.send(addr, response)
 
@@ -138,22 +158,25 @@ class Server:
                         if DEBUG: self.printToFile(f'Found CNAME for {name}: {record.rdata}')
                         addrs.append(str(record.rdata))
                         return_value = 'CNAME'
-                        # if recursive:
-                        #     next_q = f" {record.rdata} A"
-                        #     cname_response = self.handleRequest(next_q, recursive=False)
-                        #     if cname_response and cname_response[0] == 'A':
-                        #         addrs.extend(cname_response[3])  
                     elif record.rtype == QTYPE.A:
                         if DEBUG: self.printToFile(f'Found A record for {name}: {record.rdata}')
                         addrs.append(str(record.rdata))
                         return_value = 'A'
         elif qtype == 'MX':
             if DEBUG: self.printToFile(f'looking for corresponding email for {name} in our records')
-            return_value = 'MX'
+            return_value = qtype
             for record in self.records:
                 if name == record.get_rname():
                     if record.rtype == QTYPE.MX:
                         if DEBUG: self.printToFile(f'found email corresponding to {name}: {record.rdata}')
+                        addrs.append(str(record.rdata))
+        elif qtype == 'NS':
+            if DEBUG: self.printToFile(f'looking for corresponding nameserver for {name} in our records')
+            return_value = qtype
+            for record in self.records:
+                if name == record.get_rname():
+                    if record.rtype == QTYPE.NS:
+                        if DEBUG: self.printToFile(f'found nameserver corresponding to {name}: {record.rdata}')
                         addrs.append(str(record.rdata))
         
         if return_value:
