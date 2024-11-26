@@ -1,7 +1,7 @@
 #!/usr/bin/env -S python3 -u
 
 import argparse, socket, time, json, select, struct, sys, math
-from dnslib import DNSRecord, DNSHeader, RR, QTYPE, A, MX, CNAME, NS, TXT
+from dnslib import DNSRecord, DNSHeader, RR, QTYPE, RCODE, A, MX, CNAME, NS, TXT
 
 DEBUG = True
 
@@ -59,39 +59,45 @@ class Server:
                 for record in self.records:
                     if record.rtype == QTYPE.NS and str(record.rname) == self.domain:
                         response.add_auth(RR(record.rname, QTYPE.NS, rdata=record.rdata, ttl=record.ttl))
+            
+            # Check if there are any valid answers, if there aren't
+            # then put NXDOMAIN in the header and send that response
+            if not valid_addrs:
+                response.header.rcode = RCODE.NXDOMAIN
+            else:
+                for address in valid_addrs:
+                    match data[0]:
+                        case 'A':
+                            response.add_answer(RR(name, QTYPE.A, rdata=A(address), ttl=ttl))
+                        case 'CNAME':
+                            recursive = True
+                            response.add_answer(RR(name, QTYPE.CNAME, rdata=CNAME(address), ttl=ttl))
+                        case 'MX':
+                            priority, domain = address.split(' ', 1)
+                            response.add_answer(RR(name, QTYPE.MX, rdata=MX(domain, int(priority)), ttl=ttl))
+                        case 'NS':
+                            recursive = True
+                            response.add_answer(RR(name, QTYPE.NS, rdata=NS(address), ttl=ttl))
+                        case 'TXT':
+                            text = str(address).replace('"', '') # weird issue where address wasnt orignally a string but was surrounded by quotations
+                            response.add_answer(RR(name, QTYPE.TXT, rdata=TXT(text), ttl=ttl))
+                        case _:
+                            if DEBUG: self.printToFile('UNKNOWN REQUEST ENCOUNTERED. QUITTING...')
+                            response.header.rcode = RCODE.NXDOMAIN
+                            break
 
-            for address in valid_addrs:
-                match data[0]:
-                    case 'A':
-                        response.add_answer(RR(name, QTYPE.A, rdata=A(address), ttl=ttl))
-                    case 'CNAME':
-                        recursive = True
-                        response.add_answer(RR(name, QTYPE.CNAME, rdata=CNAME(address), ttl=ttl))
-                    case 'MX':
-                        priority, domain = address.split(' ', 1)
-                        response.add_answer(RR(name, QTYPE.MX, rdata=MX(domain, int(priority)), ttl=ttl))
-                    case 'NS':
-                        recursive = True
-                        response.add_answer(RR(name, QTYPE.NS, rdata=NS(address), ttl=ttl))
-                    case 'TXT':
-                        text = str(address).replace('"', '') # weird issue where address wasnt orignally a string but was surrounded by quotations
-                        response.add_answer(RR(name, QTYPE.TXT, rdata=TXT(text), ttl=ttl))
-                    case _:
-                        if DEBUG: self.printToFile('UNKNOWN REQUEST ENCOUNTERED. QUITTING...')
-                        return
-
-                if recursive:
-                    recursive_data = self.handleRequest(f' {address} A')
-                    if recursive_data:
-                        if recursive_data[0] == 'A':
-                            recursive_name = recursive_data[1]
-                            recursive_ttl = recursive_data[2] if recursive_data[2] else 5
-                            recursive_addrs = recursive_data[3]
-                            for recursive_addr in recursive_addrs:
-                                if data[0] == 'NS':
-                                    response.add_ar(RR(recursive_name, QTYPE.A, rdata=A(recursive_addr), ttl=recursive_ttl))
-                                else:
-                                    response.add_answer(RR(recursive_name, QTYPE.A, rdata=A(recursive_addr), ttl=recursive_ttl))
+                    if recursive:
+                        recursive_data = self.handleRequest(f' {address} A')
+                        if recursive_data:
+                            if recursive_data[0] == 'A':
+                                recursive_name = recursive_data[1]
+                                recursive_ttl = recursive_data[2] if recursive_data[2] else 5
+                                recursive_addrs = recursive_data[3]
+                                for recursive_addr in recursive_addrs:
+                                    if data[0] == 'NS':
+                                        response.add_ar(RR(recursive_name, QTYPE.A, rdata=A(recursive_addr), ttl=recursive_ttl))
+                                    else:
+                                        response.add_answer(RR(recursive_name, QTYPE.A, rdata=A(recursive_addr), ttl=recursive_ttl))
 
         self.send(addr, response)
 
