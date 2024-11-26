@@ -3,8 +3,7 @@
 import argparse, socket, time, json, select, struct, sys, math
 from dnslib import DNSRecord, DNSHeader, RR, QTYPE, RCODE, A, MX, CNAME, NS, TXT
 
-DEBUG = True
-
+DEBUG = False
 
 class Server:
     def __init__(self, root_ip, domain, port):
