@@ -28,19 +28,37 @@ class Server:
         with open(file, 'a') as file:
             print(content, file=file)      
         
-    def sendToRoot(self, request):
-        self.printToFile(f'Forwarding {request} to root server...')
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as root_sock:
-            root_sock.sendto(request.pack(), (self.root_ip, 53))
-            # self.send(self.root_ip, request)
-            try:
-                response, _ = root_sock.recvfrom(65535)
-                parsed_response = DNSRecord.parse(response)
-                self.printToFile(f'Received response from root server:\n    {parsed_response}')
-                return DNSRecord.parse(response)
-            except socket.timeout:
-                self.printToFile('Something went wrong when querying te root server and the socket timed out')
-                return None
+    def recursiveResolve(self, request, nameserver):
+        current_ns = nameserver
+        while True:
+            if DEBUG: self.printToFile(f'Querying {current_ns} for {request.get_q()}...')
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.sendto(request.pack(), (current_ns, 53))
+                try:
+                    response, _ = sock.recvfrom(65535)
+                    parsed_response = DNSRecord.parse(response)
+                    if DEBUG: self.printToFile(f'Received response from {current_ns}:\n    {parsed_response}')
+                    if parsed_response.rr:
+                        return parsed_response
+                    authority = parsed_response.auth
+                    additional = parsed_response.ar
+
+                    for record in additional:
+                        if record.rtype == QTYPE.A:
+                            current_ns = str(record.rdata)
+                            break
+                    else:
+                        # if ther are no additional nameservers, check authority
+                        for record in authority:
+                            if record.rtype == QTYPE.NS:
+                                current_ns = str(record.rdata)
+                                break
+                        else:
+                            if DEBUG: self.printToFile('no nameservers are present in response. Quitting...')
+                            return None
+                except socket.timeout:
+                    if DEBUG: self.printToFile(f'Timeout while querying for {nameserver}')
+                    return None
 
     def send(self, addr, message):
         self.log("Sending message:\n%s" % message)
@@ -118,12 +136,13 @@ class Server:
                                         response.add_answer(RR(recursive_name, QTYPE.A, rdata=A(recursive_addr), ttl=recursive_ttl))
         else:
             # we need to query the root server if we have no valid answers
-            response = self.sendToRoot(request)
+            response = self.recursiveResolve(request, self.root_ip)
             if response:
-                response.header.aa = 0
                 response.header.ra = 1
+                response.header.aa = 0
+                self.send(addr, response)
             else:
-                self.printToFile(f'Received nothing from root server. Quitting...')
+                self.printToFile(f'Received nothing from recursively resolving. Quitting...')
 
         self.send(addr, response)
 
