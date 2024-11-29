@@ -3,7 +3,7 @@
 import argparse, socket, time, json, select, struct, sys, math
 from dnslib import DNSRecord, DNSHeader, RR, QTYPE, RCODE, A, MX, CNAME, NS, TXT
 
-DEBUG = False
+DEBUG = True
 
 class Server:
     def __init__(self, root_ip, domain, port):
@@ -19,7 +19,6 @@ class Server:
 
         self.log("Bound to port %d" % self.port)
     
-
     def log(self, message):
         sys.stderr.write(message + "\n")
         sys.stderr.flush()
@@ -28,6 +27,20 @@ class Server:
         file = 'debug.txt'
         with open(file, 'a') as file:
             print(content, file=file)      
+        
+    def sendToRoot(self, request):
+        self.printToFile(f'Forwarding {request} to root server...')
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as root_sock:
+            root_sock.sendto(request.pack(), (self.root_ip, 53))
+            # self.send(self.root_ip, request)
+            try:
+                response, _ = root_sock.recvfrom(65535)
+                parsed_response = DNSRecord.parse(response)
+                self.printToFile(f'Received response from root server:\n    {parsed_response}')
+                return DNSRecord.parse(response)
+            except socket.timeout:
+                self.printToFile('Something went wrong when querying te root server and the socket timed out')
+                return None
 
     def send(self, addr, message):
         self.log("Sending message:\n%s" % message)
@@ -35,10 +48,10 @@ class Server:
         self.socket.sendto(message.pack(), addr)
 
     def recv(self, socket):
-        data, addr = socket.recvfrom(65535)
+        req_data, addr = socket.recvfrom(65535)
 
-        # Unpack the DNS request
-        request = DNSRecord.parse(data)
+        # unpack the DNS request
+        request = DNSRecord.parse(req_data)
         self.log("Received message:\n%s" % request)
 
         question = request.get_q()
@@ -46,8 +59,9 @@ class Server:
         # parse the question and look for the records for all the matching addrs
         data = self.handleRequest(str(question))
         
-        if data:
+        if data and data[1] != '.': # send resopnse if there are valid answers, otherwise query root dns server
             response = request.reply()
+            response.header.ra = 1
             name = data[1]
             ttl = data[2]
             valid_addrs = data[3]
@@ -97,6 +111,14 @@ class Server:
                                         response.add_ar(RR(recursive_name, QTYPE.A, rdata=A(recursive_addr), ttl=recursive_ttl))
                                     else:
                                         response.add_answer(RR(recursive_name, QTYPE.A, rdata=A(recursive_addr), ttl=recursive_ttl))
+        else:
+            # we need to query the root server if we have no valid answers
+            response = self.sendToRoot(request)
+            if response:
+                response.header.aa = 0
+                response.header.ra = 1
+            else:
+                self.printToFile(f'Received nothing from root server. Quitting...')
 
         self.send(addr, response)
 
