@@ -8,7 +8,7 @@ class Server:
     def __init__(self, root_ip, zone_file, port):
         self.root_ip = root_ip
         self.zone_file = zone_file
-        self.records = {}   # { (name, qtype): [RR, ...] }
+        self.records = {}   # { (name, qtype): [RR, ...] } 
         self.authoritative_domain = None
 
         self.parse_zone_file()
