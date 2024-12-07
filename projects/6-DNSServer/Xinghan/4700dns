@@ -177,10 +177,21 @@ class Server:
         finally:
             s.close()
 
+    def filter_bailiwick(self, rrset, bailiwick_domain):
+        # Remove any records that are not under the current bailiwick
+        filtered = []
+        for rr in rrset:
+            if str(rr.rname).lower().endswith(bailiwick_domain):
+                filtered.append(rr)
+        return filtered
+
     def recursive_resolve(self, qname, qtype, orig_id):
         current_server = self.root_ip
         original_qname = qname
         visited = set()
+
+        # Start at the root bailiwick
+        current_bailiwick = "."
 
         while True:
             if (current_server, qname, qtype) in visited:
@@ -191,18 +202,22 @@ class Server:
             if response is None:
                 return self.make_error_response(original_qname, qtype, RCODE.SERVFAIL, orig_id)
 
-            # If we got direct answers
+            # Filter all sections for bailiwick (including answer section)
+            response.rr = self.filter_bailiwick(response.rr, current_bailiwick)
+            response.auth = self.filter_bailiwick(response.auth, current_bailiwick)
+            response.ar = self.filter_bailiwick(response.ar, current_bailiwick)
+
             if response.header.rcode == RCODE.NOERROR:
                 if len(response.rr) > 0:
-                    # Check if we got what we need
+                    # Got answers, return them
                     final_response = self.follow_cname_if_needed(response, current_server, orig_id)
                     return final_response
 
-                # No direct answers, check authority for NS
+                # No answers, maybe a delegation?
                 ns_records = [r for r in response.auth if r.rtype == QTYPE.NS]
                 if ns_records:
                     if qtype == QTYPE.NS:
-                        # Build a NOERROR response
+                        # Return NOERROR with NS records
                         final = DNSRecord(
                             DNSHeader(id=orig_id, qr=1, ra=1, aa=0, rcode=RCODE.NOERROR),
                             q=DNSQuestion(original_qname, qtype)
@@ -214,6 +229,7 @@ class Server:
                                 final.add_ar(ar_rr)
                         return final
 
+                    # Follow delegation
                     ns_name = str(ns_records[0].rdata.label)
                     ns_ip = self.find_nameserver_ip(ns_name, response)
                     if not ns_ip:
@@ -224,21 +240,34 @@ class Server:
                                     ns_ip = str(rr.rdata)
                                     break
                     if ns_ip:
+                        # Update bailiwick to the NS owner's domain
+                        new_bailiwick = str(ns_records[0].rname)
+                        if not new_bailiwick.endswith('.'):
+                            new_bailiwick += '.'
+                        current_bailiwick = new_bailiwick.lower()
+
                         current_server = ns_ip
                         continue
                     else:
+                        # Can't find NS IP, return SERVFAIL
                         return self.make_error_response(original_qname, qtype, RCODE.SERVFAIL, orig_id)
                 else:
-                    # Check for SOA (NXDOMAIN)
+                    # No answers, no NS, check for SOA => NXDOMAIN
                     soa_records = [r for r in response.auth if r.rtype == QTYPE.SOA]
                     if soa_records:
                         return self.make_error_response(original_qname, qtype, RCODE.NXDOMAIN, orig_id)
                     else:
-                        return self.make_error_response(original_qname, qtype, RCODE.SERVFAIL, orig_id)
+                        # No data, no NXDOMAIN => NOERROR empty
+                        final = DNSRecord(
+                            DNSHeader(id=orig_id, qr=1, ra=1, aa=0, rcode=RCODE.NOERROR),
+                            q=DNSQuestion(original_qname, qtype)
+                        )
+                        return final
 
             elif response.header.rcode == RCODE.NXDOMAIN:
                 return self.make_error_response(original_qname, qtype, RCODE.NXDOMAIN, orig_id)
             else:
+                # Other errors => SERVFAIL
                 return self.make_error_response(original_qname, qtype, RCODE.SERVFAIL, orig_id)
 
     def follow_cname_if_needed(self, response, current_server, orig_id):
@@ -274,7 +303,12 @@ class Server:
             else:
                 return cname_resp
 
-        return self.make_error_response(qname, qtype, RCODE.SERVFAIL, orig_id)
+        # No desired answers, no CNAME => return NOERROR empty
+        final = DNSRecord(
+            DNSHeader(id=orig_id, qr=1, ra=0, aa=0, rcode=RCODE.NOERROR),
+            q=response.q
+        )
+        return final
 
     def find_nameserver_ip(self, ns_name, response):
         for rr in response.ar:
