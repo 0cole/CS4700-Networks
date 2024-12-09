@@ -188,7 +188,7 @@ class Server:
         response = self.recursive_resolve(qname, qtype, orig_id)
 
         # cache response after successful resolition, assuming there are records to be added
-        if response and response.header.rcode == RCODE.NOERROR and response.rr > 0:
+        if response and response.header.rcode == RCODE.NOERROR and len(response.rr) > 0:
             self.add_to_cache(qname, qtype, response.rr)
         response.header.ra = 1
         response.header.id = orig_id
